@@ -5,26 +5,12 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
 from dotenv import load_dotenv
 from aiohttp import web
 
 import db
 from ai_brain import analyze_message
-from aiohttp import web
-
-# Фейковый веб-сервер для удержания Render в активном состоянии
-async def handle_ping(request):
-    return web.Response(text="Bot is running 24/7!")
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
 
 load_dotenv()
 
@@ -39,7 +25,25 @@ bot = Bot(
 )
 dp = Dispatcher()
 
-# --- Управление ботом из личного чата c ботом ---
+# --- Фейковый веб-сервер для Render и UptimeRobot ---
+async def handle_ping(request):
+    return web.Response(text="Bot is running 24/7!", status=200)
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render передает порт в переменные окружения автоматически
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"🌐 Веб-сервер успешно запущен на порту {port}")
+
+# --- Команды личного управления ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -101,18 +105,17 @@ async def cmd_unban(message: types.Message):
     
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
-        await message.answer("⚠️ Использование: <code>/unban ID_ПОЛЬЗОВАТЕЛЯ</code>\nПример: <code>/unban 123456789</code>")
+        await message.answer("⚠️ Использование: <code>/unban ID_ПОЛЬЗОВАТЕЛЯ</code>")
         return
     
     target_id = int(args[1])
     db.remove_from_blacklist(target_id)
     await message.answer(f"✅ Пользователь <code>{target_id}</code> удален из черного списка!")
 
-# --- Обработка входящих сообщений из Telegram Business ---
+# --- Обработка бизнес-сообщений ---
 
 @dp.business_message()
 async def handle_business_message(message: types.Message):
-    # Игнорируем собственные сообщения
     if message.from_user.id == MY_ID:
         return
 
@@ -121,7 +124,6 @@ async def handle_business_message(message: types.Message):
     text = message.text or message.caption or ""
     status = db.get_status()
 
-    # 1. Помечаем входящее сообщение как прочитанное (две галочки)
     try:
         await bot.read_business_message(
             business_connection_id=message.business_connection_id,
@@ -129,13 +131,11 @@ async def handle_business_message(message: types.Message):
             message_id=message.message_id
         )
     except Exception as e:
-        logging.warning(f"Не удалось пометить сообщение прочитанным: {e}")
+        logging.warning(f"Не удалось прочитать сообщение: {e}")
 
-    # 2. Персональный игнор
     if db.is_blacklisted(sender_id):
         return
 
-    # 3. Режимы доступности
     if status == "ignore":
         await asyncio.sleep(2)
         await message.answer("[ИИ-Ассистент] Пользователь временно не на связи.")
@@ -153,7 +153,6 @@ async def handle_business_message(message: types.Message):
             await message.answer("[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.")
             return
 
-    # 4. Обработка фото / скриншотов
     photo_path = None
     if message.photo:
         photo = message.photo[-1]
@@ -161,20 +160,17 @@ async def handle_business_message(message: types.Message):
         photo_path = f"temp_{photo.file_id}.jpg"
         await bot.download_file(file_info.file_path, photo_path)
 
-    # Анализ Gemini
     analysis = analyze_message(text, photo_path)
 
     if photo_path and os.path.exists(photo_path):
         os.remove(photo_path)
 
-    # 5. Предупреждение о конфликте
     if analysis.get("tone_warning"):
         await bot.send_message(
             MY_ID,
-            f"⚠️ <b>Внимание: Повышенный тон общения!</b>\nОт: <code>{sender_name}</code> (ID: <code>{sender_id}</code>)\nТекст: <i>{text}</i>"
+            f"⚠️ <b>Внимание: Повышенный тон!</b>\nОт: <code>{sender_name}</code>\nТекст: <i>{text}</i>"
         )
 
-    # 6. Разделение логики
     category = analysis.get("category")
     summary = analysis.get("summary")
 
@@ -189,29 +185,28 @@ async def handle_business_message(message: types.Message):
 
     elif category in ["formal", "tech_vpn", "urgent"]:
         await asyncio.sleep(2)
-
         reply_text = analysis.get("suggested_reply")
         if reply_text:
             await message.answer(reply_text)
-
-            # Отчёт владельцу в ЛС
             report_msg = f"🤖 <b>ИИ ответил {sender_name}:</b>\n{reply_text}"
             if summary:
-                report_msg += f"\n💡 <b>Расшифровка:</b> {summary}"
+                report_msg += f"\n💡 <b>Контекст:</b> {summary}"
             await bot.send_message(MY_ID, report_msg)
 
-# --- Кнопка бана из отчета ---
 @dp.callback_query(F.data.startswith("ban_"))
 async def callback_ban(callback: types.CallbackQuery):
     user_id = int(callback.data.split("_")[1])
     db.add_to_blacklist(user_id)
     await callback.answer("Пользователь заблокирован!", show_alert=True)
-    await callback.message.edit_text(f"🚫 Пользователь <code>{user_id}</code> добавлен в черный список.")
+    await callback.message.edit_text(f"🚫 Пользователь <code>{user_id}</code> заблокирован.")
 
-from aiogram.types import BotCommand
+# --- Точка входа ---
 
 async def main():
+    # 1. Запускаем фоновый веб-сервер
     await start_web_server()
+
+    # 2. Устанавливаем команды бота
     commands = [
         BotCommand(command="start", description="Главное меню и статус"),
         BotCommand(command="default", description="Обычный режим"),
@@ -219,11 +214,13 @@ async def main():
         BotCommand(command="sleep", description="Режим сна"),
         BotCommand(command="busy", description="Режим Занят"),
         BotCommand(command="goodmorning", description="Утренний дайджест"),
-        BotCommand(command="unban", description="Разблокировать по ID (/unban ID)")
+        BotCommand(command="unban", description="Разблокировать (/unban ID)")
     ]
     await bot.set_my_commands(commands)
-    
-    print("🚀 Telegram Business Bot запущен!")
+
+    # 3. Удаляем зависшие вебхуки и запускаем поллинг
+    await bot.delete_webhook(drop_pending_updates=True)
+    logging.info("🚀 Бизнес-бот запущен на Render!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
