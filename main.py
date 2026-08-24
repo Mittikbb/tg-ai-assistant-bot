@@ -11,6 +11,20 @@ from aiohttp import web
 
 import db
 from ai_brain import analyze_message
+from aiohttp import web
+
+# Фейковый веб-сервер для удержания Render в активном состоянии
+async def handle_ping(request):
+    return web.Response(text="Bot is running 24/7!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
 
 load_dotenv()
 
