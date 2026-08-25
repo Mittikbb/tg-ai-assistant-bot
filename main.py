@@ -63,7 +63,10 @@ async def cmd_start(message: types.Message):
         "/sleep — Режим сна\n"
         "/busy — Режим «Занят»\n"
         "/goodmorning — Утренний дайджест\n"
-        "/stats — Статистика ответов"
+        "/stats — Статистика ответов\n"
+        "/aggressive ID — Включить агрессивный режим\n"
+        "/unaggressive ID — Выключить агрессивный режим\n"
+        "/unban ID — Разблокировать пользователя"
     )
 
 @dp.message(Command("default"))
@@ -134,6 +137,34 @@ async def cmd_unban(message: types.Message):
     target_id = int(args[1])
     db.remove_from_blacklist(target_id)
     await message.answer(f"✅ Пользователь <code>{target_id}</code> удален из черного списка!")
+
+@dp.message(Command("aggressive"))
+async def cmd_aggressive(message: types.Message):
+    if message.from_user.id != MY_ID:
+        return
+    
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("⚠️ Использование: <code>/aggressive ID_ПОЛЬЗОВАТЕЛЯ</code>")
+        return
+    
+    target_id = int(args[1])
+    db.add_to_aggressive(target_id)
+    await message.answer(f"🔥 Агрессивный режим <b>включен</b> для пользователя <code>{target_id}</code>!")
+
+@dp.message(Command("unaggressive"))
+async def cmd_unaggressive(message: types.Message):
+    if message.from_user.id != MY_ID:
+        return
+    
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("⚠️ Использование: <code>/unaggressive ID_ПОЛЬЗОВАТЕЛЯ</code>")
+        return
+    
+    target_id = int(args[1])
+    db.remove_from_aggressive(target_id)
+    await message.answer(f"🟢 Агрессивный режим <b>отключен</b> для пользователя <code>{target_id}</code>.")
 
 # --- Обработка бизнес-сообщений ---
 
@@ -212,11 +243,12 @@ async def handle_business_message(message: types.Message):
         voice_path = f"temp_{message.voice.file_id}.ogg"
         await bot.download_file(file_info.file_path, voice_path)
 
-    # Достаём текущее досье на человека
+    # Достаём текущее досье на человека и статус агрессивного режима
     user_profile = db.get_user_profile(sender_id)
+    is_aggr = db.is_aggressive(sender_id)
 
-    # Передаём тексты, файлы и досье в ИИ
-    analysis = analyze_message(text, photo_path, voice_path, user_profile)
+    # Передаём тексты, файлы, досье и флаг агрессии в ИИ
+    analysis = analyze_message(text, photo_path, voice_path, user_profile, is_aggressive=is_aggr)
 
     # Удаляем временные файлы
     if photo_path and os.path.exists(photo_path):
@@ -246,17 +278,23 @@ async def handle_business_message(message: types.Message):
             await bot.send_message(MY_ID, info_msg, reply_markup=kb)
         return
 
-    # 4. ОБРАБОТКА И ОТВЕТЫВ О Б Ы Ч Н О М   Р Е Ж И М Е
+    # 4. ОБРАБОТКА И ОТВЕТЫ В ОБЫЧНОМ / АГРЕССИВНОМ РЕЖИМЕ
     if analysis.get("tone_warning"):
         await bot.send_message(
             MY_ID,
             f"⚠️ <b>Внимание: Повышенный тон!</b>\nОт: <code>{sender_name}</code>\nТекст: <i>{text or '[Голосовое/Медиа]'}</i>"
         )
 
-    kb_actions = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🚫 Заигнорить", callback_data=f"ban_{sender_id}"),
-        InlineKeyboardButton(text="⏸️ На паузу", callback_data=f"pause_{chat_id}")
-    ]])
+    # Динамическая кнопка для агрессивного режима
+    aggr_btn = InlineKeyboardButton(text="🟢 Выкл Агрессию", callback_data=f"unaggr_{sender_id}") if is_aggr else InlineKeyboardButton(text="🔥 Вкл Агрессию", callback_data=f"aggr_{sender_id}")
+
+    kb_actions = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🚫 Заигнорить", callback_data=f"ban_{sender_id}"),
+            InlineKeyboardButton(text="⏸️ На паузу", callback_data=f"pause_{chat_id}")
+        ],
+        [aggr_btn]
+    ])
 
     if category == "personal":
         msg_out = f"📥 <b>Личное от {sender_name}</b> (<code>{sender_id}</code>):\n{text or '[Голосовое сообщение/Медиа]'}"
@@ -276,7 +314,8 @@ async def handle_business_message(message: types.Message):
             # Обычные текстовые сообщения и ГС присылают ответ собеседнику
             if reply_text:
                 await message.answer(reply_text)
-                report_msg = f"🤖 <b>ИИ ответил {sender_name}:</b>\n{reply_text}"
+                aggr_tag = " 🔥 [АГРЕССИВНЫЙ]" if is_aggr else ""
+                report_msg = f"🤖 <b>ИИ ответил {sender_name}{aggr_tag}:</b>\n{reply_text}"
                 if summary:
                     report_msg += f"\n💡 <b>Контекст/Расшифровка:</b> {summary}"
                 await bot.send_message(MY_ID, report_msg, reply_markup=kb_actions)
@@ -287,6 +326,20 @@ async def callback_ban(callback: types.CallbackQuery):
     db.add_to_blacklist(user_id)
     await callback.answer("Пользователь заблокирован!", show_alert=True)
     await callback.message.edit_text(f"🚫 Пользователь <code>{user_id}</code> заблокирован.")
+
+@dp.callback_query(F.data.startswith("aggr_"))
+async def callback_aggr(callback: types.CallbackQuery):
+    user_id = int(callback.data.split("_")[1])
+    db.add_to_aggressive(user_id)
+    await callback.answer("Агрессивный режим включен!", show_alert=True)
+    await callback.message.edit_text(f"🔥 Агрессивный режим <b>включен</b> для пользователя <code>{user_id}</code>.")
+
+@dp.callback_query(F.data.startswith("unaggr_"))
+async def callback_unaggr(callback: types.CallbackQuery):
+    user_id = int(callback.data.split("_")[1])
+    db.remove_from_aggressive(user_id)
+    await callback.answer("Агрессивный режим отключен!", show_alert=True)
+    await callback.message.edit_text(f"🟢 Агрессивный режим <b>отключен</b> для пользователя <code>{user_id}</code>.")
 
 @dp.callback_query(F.data.startswith("resume_"))
 async def callback_resume(callback: types.CallbackQuery):
@@ -318,6 +371,8 @@ async def main():
         BotCommand(command="busy", description="Режим Занят"),
         BotCommand(command="goodmorning", description="Утренняя сводка"),
         BotCommand(command="stats", description="Статистика ответов"),
+        BotCommand(command="aggressive", description="Вкл агрессию (/aggressive ID)"),
+        BotCommand(command="unaggressive", description="Выкл агрессию (/unaggressive ID)"),
         BotCommand(command="unban", description="Разблокировать (/unban ID)")
     ]
     await bot.set_my_commands(commands)

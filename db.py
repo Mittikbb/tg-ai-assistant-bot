@@ -20,6 +20,13 @@ def init_db():
             user_id INTEGER PRIMARY KEY
         )
     """)
+
+    # Таблица пользователей с включенным агрессивным режимом
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS aggressive_users (
+            user_id INTEGER PRIMARY KEY
+        )
+    """)
     
     # Таблица для ночных сообщений
     cursor.execute("""
@@ -90,6 +97,32 @@ def remove_from_blacklist(user_id: int):
     cursor.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
+
+# --- Работа с Агрессивным режимом по ID ---
+
+def is_aggressive(user_id: int) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM aggressive_users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+def add_to_aggressive(user_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO aggressive_users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+
+def remove_from_aggressive(user_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM aggressive_users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+# --- Работа с ночными логами ---
 
 def save_night_message(sender_name: str, text: str):
     conn = sqlite3.connect(DB_NAME)
