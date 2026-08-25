@@ -62,7 +62,8 @@ async def cmd_start(message: types.Message):
         "/ignore_all — Тотальный игнор\n"
         "/sleep — Режим сна\n"
         "/busy — Режим «Занят»\n"
-        "/goodmorning — Утренняя сводка"
+        "/goodmorning — Утренний дайджест\n"
+        "/stats — Статистика ответов"
     )
 
 @dp.message(Command("default"))
@@ -102,6 +103,24 @@ async def cmd_goodmorning(message: types.Message):
             report = "🌅 Ночью никто не писал."
         await message.answer(report)
 
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    if message.from_user.id != MY_ID:
+        return
+    stats = db.get_stats_summary()
+    total = stats.get("total", 0)
+    categories = stats.get("categories", {})
+    
+    text = f"📊 <b>Статистика ассистента:</b>\n\n"
+    text += f"Всего обработано сообщений: <b>{total}</b>\n\n"
+    text += "По категориям:\n"
+    text += f"• 👥 Личные (personal): {categories.get('personal', 0)}\n"
+    text += f"• 💬 Обычные (formal): {categories.get('formal', 0)}\n"
+    text += f"• 💻 Технические (tech_vpn): {categories.get('tech_vpn', 0)}\n"
+    text += f"• 🚨 Срочные (urgent): {categories.get('urgent', 0)}\n"
+    
+    await message.answer(text)
+
 @dp.message(Command("unban"))
 async def cmd_unban(message: types.Message):
     if message.from_user.id != MY_ID:
@@ -122,22 +141,27 @@ async def cmd_unban(message: types.Message):
 async def handle_business_message(message: types.Message):
     sender_id = message.from_user.id
     chat_id = message.chat.id
+    sender_name = message.from_user.first_name or "Пользователь"
+    text = message.text or message.caption or ""
 
     # 1. Если сообщение отправлено ТОБОЙ (пишешь сам вручную)
     if sender_id == MY_ID:
         user_last_manual_msg[chat_id] = time.time()
-        logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Бот уходит на паузу на 10 мин.")
+        logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Бот уходит на паузу.")
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
+        ]])
+        await bot.send_message(
+            MY_ID, 
+            f"⏸️ <b>Автоответчик приостановлен</b> на 10 мин для чата с <code>{chat_id}</code>.",
+            reply_markup=kb
+        )
         return
 
-    # 2. Проверяем автопаузу (не писал ли ты сам в последние 10 минут)
+    # Проверяем, находится ли чат на паузе
     last_msg_time = user_last_manual_msg.get(chat_id, 0)
-    if time.time() - last_msg_time < PAUSE_TIMEOUT:
-        logging.info(f"⏸️ Бот пропустил сообщение в {chat_id}: активна пауза 10 минут.")
-        return
-
-    sender_name = message.from_user.first_name or "Пользователь"
-    text = message.text or message.caption or ""
-    status = db.get_status()
+    is_paused = (time.time() - last_msg_time < PAUSE_TIMEOUT)
 
     try:
         await bot.read_business_message(
@@ -150,6 +174,58 @@ async def handle_business_message(message: types.Message):
 
     if db.is_blacklisted(sender_id):
         return
+
+    # Скачивание фото (если есть)
+    photo_path = None
+    if message.photo:
+        photo = message.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+        photo_path = f"temp_{photo.file_id}.jpg"
+        await bot.download_file(file_info.file_path, photo_path)
+
+    # Скачивание голосового сообщения (если есть)
+    voice_path = None
+    if message.voice:
+        file_info = await bot.get_file(message.voice.file_id)
+        voice_path = f"temp_{message.voice.file_id}.ogg"
+        await bot.download_file(file_info.file_path, voice_path)
+
+    # Достаём текущее досье на человека
+    user_profile = db.get_user_profile(sender_id)
+
+    # Передаём тексты, файлы и досье в ИИ
+    analysis = analyze_message(text, photo_path, voice_path, user_profile)
+
+    # Удаляем временные файлы
+    if photo_path and os.path.exists(photo_path):
+        os.remove(photo_path)
+    if voice_path and os.path.exists(voice_path):
+        os.remove(voice_path)
+
+    category = analysis.get("category", "formal")
+    summary = analysis.get("summary", "")
+    new_profile = analysis.get("user_profile")
+
+    # Логируем статистику и обновляем досье
+    db.log_stat(sender_id, category)
+    if new_profile:
+        db.update_user_profile(sender_id, sender_name, new_profile)
+
+    # 2. ЕСЛИ ЧАТ НА ПАУЗЕ: Бот не отвечает в чат, но расшифровывает ГС/фото и слабёт тебе сводку
+    if is_paused:
+        logging.info(f"⏸️ ЧАТ НА ПАУЗЕ. Бот молчит в чате, но отправляет разбор вам в ЛС.")
+        if message.voice or message.photo or category == "urgent":
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
+            ]])
+            info_msg = f"📩 <b>Входящее сообщение (Чат на паузе)</b> от {sender_name}:\n"
+            if summary:
+                info_msg += f"\n💡 <b>Расшифровка/Контекст:</b> {summary}"
+            await bot.send_message(MY_ID, info_msg, reply_markup=kb)
+        return
+
+    # 3. ЕСЛИ ЧАТ НЕ НА ПАУЗЕ — Стандартные режимы
+    status = db.get_status()
 
     if status == "ignore":
         await asyncio.sleep(2)
@@ -168,47 +244,22 @@ async def handle_business_message(message: types.Message):
             await message.answer("[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.")
             return
 
-    # Скачивание фото (если есть)
-    photo_path = None
-    if message.photo:
-        photo = message.photo[-1]
-        file_info = await bot.get_file(photo.file_id)
-        photo_path = f"temp_{photo.file_id}.jpg"
-        await bot.download_file(file_info.file_path, photo_path)
-
-    # Скачивание голосового сообщения (если есть)
-    voice_path = None
-    if message.voice:
-        file_info = await bot.get_file(message.voice.file_id)
-        voice_path = f"temp_{message.voice.file_id}.ogg"
-        await bot.download_file(file_info.file_path, voice_path)
-
-    # Передаём тексты и файлы в ИИ
-    analysis = analyze_message(text, photo_path, voice_path)
-
-    # Удаляем временные файлы
-    if photo_path and os.path.exists(photo_path):
-        os.remove(photo_path)
-    if voice_path and os.path.exists(voice_path):
-        os.remove(voice_path)
-
     if analysis.get("tone_warning"):
         await bot.send_message(
             MY_ID,
-            f"⚠️ <b>Внимание: Повышенный тон!</b>\nОт: <code>{sender_name}</code>\nТекст: <i>{text or '[Голосовое]'}</i>"
+            f"⚠️ <b>Внимание: Повышенный тон!</b>\nОт: <code>{sender_name}</code>\nТекст: <i>{text or '[Голосовое/Медиа]'}</i>"
         )
 
-    category = analysis.get("category")
-    summary = analysis.get("summary")
+    kb_actions = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🚫 Заигнорить", callback_data=f"ban_{sender_id}"),
+        InlineKeyboardButton(text="⏸️ На паузу", callback_data=f"pause_{chat_id}")
+    ]])
 
     if category == "personal":
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🚫 Заигнорить", callback_data=f"ban_{sender_id}")
-        ]])
-        msg_out = f"📥 <b>Личное от {sender_name}</b> (<code>{sender_id}</code>):\n{text or '[Голосовое сообщение]'}"
+        msg_out = f"📥 <b>Личное от {sender_name}</b> (<code>{sender_id}</code>):\n{text or '[Голосовое сообщение/Медиа]'}"
         if summary:
             msg_out += f"\n\n💡 <i>Контекст:</i> {summary}"
-        await bot.send_message(MY_ID, msg_out, reply_markup=kb)
+        await bot.send_message(MY_ID, msg_out, reply_markup=kb_actions)
 
     elif category in ["formal", "tech_vpn", "urgent"]:
         await asyncio.sleep(2)
@@ -218,7 +269,7 @@ async def handle_business_message(message: types.Message):
             report_msg = f"🤖 <b>ИИ ответил {sender_name}:</b>\n{reply_text}"
             if summary:
                 report_msg += f"\n💡 <b>Контекст:</b> {summary}"
-            await bot.send_message(MY_ID, report_msg)
+            await bot.send_message(MY_ID, report_msg, reply_markup=kb_actions)
 
 @dp.callback_query(F.data.startswith("ban_"))
 async def callback_ban(callback: types.CallbackQuery):
@@ -226,6 +277,23 @@ async def callback_ban(callback: types.CallbackQuery):
     db.add_to_blacklist(user_id)
     await callback.answer("Пользователь заблокирован!", show_alert=True)
     await callback.message.edit_text(f"🚫 Пользователь <code>{user_id}</code> заблокирован.")
+
+@dp.callback_query(F.data.startswith("resume_"))
+async def callback_resume(callback: types.CallbackQuery):
+    chat_id = int(callback.data.split("_")[1])
+    user_last_manual_msg[chat_id] = 0  # Сбрасываем таймер паузы
+    await callback.answer("Автоответчик возобновлен для этого чата!", show_alert=True)
+    await callback.message.edit_text(f"▶️ <b>Автоответчик снова активен</b> для чата <code>{chat_id}</code>.")
+
+@dp.callback_query(F.data.startswith("pause_"))
+async def callback_pause(callback: types.CallbackQuery):
+    chat_id = int(callback.data.split("_")[1])
+    user_last_manual_msg[chat_id] = time.time()  # Включаем паузу
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
+    ]])
+    await callback.answer("Чат поставлен на паузу на 10 минут!", show_alert=True)
+    await callback.message.edit_text(f"⏸️ <b>Чат <code>{chat_id}</code> на паузе</b> на 10 минут.", reply_markup=kb)
 
 # --- Точка входа ---
 
@@ -239,6 +307,7 @@ async def main():
         BotCommand(command="sleep", description="Режим сна"),
         BotCommand(command="busy", description="Режим Занят"),
         BotCommand(command="goodmorning", description="Утренняя сводка"),
+        BotCommand(command="stats", description="Статистика ответов"),
         BotCommand(command="unban", description="Разблокировать (/unban ID)")
     ]
     await bot.set_my_commands(commands)
