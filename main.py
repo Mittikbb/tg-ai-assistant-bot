@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -18,6 +19,10 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MY_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
+
+# --- Логика автопаузы бота при твоих ответах ---
+user_last_manual_msg = {}
+PAUSE_TIMEOUT = 600  # 10 минут (в секундах)
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -37,7 +42,6 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Render передает порт в переменные окружения автоматически
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
@@ -116,10 +120,21 @@ async def cmd_unban(message: types.Message):
 
 @dp.business_message()
 async def handle_business_message(message: types.Message):
-    if message.from_user.id == MY_ID:
+    sender_id = message.from_user.id
+    chat_id = message.chat.id
+
+    # 1. Если сообщение отправлено ТОБОЙ (пишешь сам вручную)
+    if sender_id == MY_ID:
+        user_last_manual_msg[chat_id] = time.time()
+        logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Бот уходит на паузу на 10 мин.")
         return
 
-    sender_id = message.from_user.id
+    # 2. Проверяем автопаузу (не писал ли ты сам в последние 10 минут)
+    last_msg_time = user_last_manual_msg.get(chat_id, 0)
+    if time.time() - last_msg_time < PAUSE_TIMEOUT:
+        logging.info(f"⏸️ Бот пропустил сообщение в {chat_id}: активна пауза 10 минут.")
+        return
+
     sender_name = message.from_user.first_name or "Пользователь"
     text = message.text or message.caption or ""
     status = db.get_status()
@@ -142,7 +157,7 @@ async def handle_business_message(message: types.Message):
         return
 
     if status == "sleep":
-        db.save_night_message(sender_name, text)
+        db.save_night_message(sender_name, text or "[Голосовое сообщение/Медиа]")
         await asyncio.sleep(2)
         await message.answer("[ИИ-Ассистент] Пользователь спит. Сообщение передам утром.")
         return
@@ -153,6 +168,7 @@ async def handle_business_message(message: types.Message):
             await message.answer("[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.")
             return
 
+    # Скачивание фото (если есть)
     photo_path = None
     if message.photo:
         photo = message.photo[-1]
@@ -160,15 +176,26 @@ async def handle_business_message(message: types.Message):
         photo_path = f"temp_{photo.file_id}.jpg"
         await bot.download_file(file_info.file_path, photo_path)
 
-    analysis = analyze_message(text, photo_path)
+    # Скачивание голосового сообщения (если есть)
+    voice_path = None
+    if message.voice:
+        file_info = await bot.get_file(message.voice.file_id)
+        voice_path = f"temp_{message.voice.file_id}.ogg"
+        await bot.download_file(file_info.file_path, voice_path)
 
+    # Передаём тексты и файлы в ИИ
+    analysis = analyze_message(text, photo_path, voice_path)
+
+    # Удаляем временные файлы
     if photo_path and os.path.exists(photo_path):
         os.remove(photo_path)
+    if voice_path and os.path.exists(voice_path):
+        os.remove(voice_path)
 
     if analysis.get("tone_warning"):
         await bot.send_message(
             MY_ID,
-            f"⚠️ <b>Внимание: Повышенный тон!</b>\nОт: <code>{sender_name}</code>\nТекст: <i>{text}</i>"
+            f"⚠️ <b>Внимание: Повышенный тон!</b>\nОт: <code>{sender_name}</code>\nТекст: <i>{text or '[Голосовое]'}</i>"
         )
 
     category = analysis.get("category")
@@ -178,7 +205,7 @@ async def handle_business_message(message: types.Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🚫 Заигнорить", callback_data=f"ban_{sender_id}")
         ]])
-        msg_out = f"📥 <b>Личное от {sender_name}</b> (<code>{sender_id}</code>):\n{text}"
+        msg_out = f"📥 <b>Личное от {sender_name}</b> (<code>{sender_id}</code>):\n{text or '[Голосовое сообщение]'}"
         if summary:
             msg_out += f"\n\n💡 <i>Контекст:</i> {summary}"
         await bot.send_message(MY_ID, msg_out, reply_markup=kb)
@@ -203,22 +230,19 @@ async def callback_ban(callback: types.CallbackQuery):
 # --- Точка входа ---
 
 async def main():
-    # 1. Запускаем фоновый веб-сервер
     await start_web_server()
 
-    # 2. Устанавливаем команды бота
     commands = [
         BotCommand(command="start", description="Главное меню и статус"),
         BotCommand(command="default", description="Обычный режим"),
         BotCommand(command="ignore_all", description="Тотальный игнор"),
         BotCommand(command="sleep", description="Режим сна"),
         BotCommand(command="busy", description="Режим Занят"),
-        BotCommand(command="goodmorning", description="Утренний дайджест"),
+        BotCommand(command="goodmorning", description="Утренняя сводка"),
         BotCommand(command="unban", description="Разблокировать (/unban ID)")
     ]
     await bot.set_my_commands(commands)
 
-    # 3. Удаляем зависшие вебхуки и запускаем поллинг
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("🚀 Бизнес-бот запущен на Render!")
     await dp.start_polling(bot)
