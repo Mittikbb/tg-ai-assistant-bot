@@ -62,7 +62,7 @@ async def cmd_start(message: types.Message):
         "/ignore_all — Тотальный игнор\n"
         "/sleep — Режим сна\n"
         "/busy — Режим «Занят»\n"
-        "/goodmorning — Утренний дайджест"
+        "/goodmorning — Утренняя сводка"
     )
 
 @dp.message(Command("default"))
