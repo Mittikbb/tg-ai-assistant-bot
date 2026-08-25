@@ -144,24 +144,26 @@ async def handle_business_message(message: types.Message):
     sender_name = message.from_user.first_name or "Пользователь"
     text = message.text or message.caption or ""
 
+    # Проверяем, находится ли чат уже на паузе
+    last_msg_time = user_last_manual_msg.get(chat_id, 0)
+    was_paused = (time.time() - last_msg_time < PAUSE_TIMEOUT)
+
     # 1. Если сообщение отправлено ТОБОЙ (пишешь сам вручную)
     if sender_id == MY_ID:
         user_last_manual_msg[chat_id] = time.time()
-        logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Бот уходит на паузу.")
         
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
-        ]])
-        await bot.send_message(
-            MY_ID, 
-            f"⏸️ <b>Автоответчик приостановлен</b> на 10 мин для чата с <code>{chat_id}</code>.",
-            reply_markup=kb
-        )
+        # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
+        if not was_paused:
+            logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Ставим на паузу.")
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
+            ]])
+            await bot.send_message(
+                MY_ID, 
+                f"⏸️ <b>Автоответчик приостановлен</b> на 10 мин для чата с <code>{chat_id}</code>.",
+                reply_markup=kb
+            )
         return
-
-    # Проверяем, находится ли чат на паузе
-    last_msg_time = user_last_manual_msg.get(chat_id, 0)
-    is_paused = (time.time() - last_msg_time < PAUSE_TIMEOUT)
 
     try:
         await bot.read_business_message(
@@ -174,6 +176,26 @@ async def handle_business_message(message: types.Message):
 
     if db.is_blacklisted(sender_id):
         return
+
+    # 2. ПРОВЕРКА СПЕЦИАЛЬНЫХ РЕЖИМОВ (Сплю / Игнор / Занят) — срабатывают Всегда
+    status = db.get_status()
+
+    if status == "ignore":
+        await asyncio.sleep(2)
+        await message.answer("[ИИ-Ассистент] Пользователь временно не на связи.")
+        return
+
+    if status == "sleep":
+        db.save_night_message(sender_name, text or "[Голосовое сообщение/Медиа]")
+        await asyncio.sleep(2)
+        await message.answer("[ИИ-Ассистент] Пользователь спит. Сообщение передам утром.")
+        return
+
+    if status == "busy":
+        if "срочно" not in text.lower():
+            await asyncio.sleep(2)
+            await message.answer("[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.")
+            return
 
     # Скачивание фото (если есть)
     photo_path = None
@@ -211,39 +233,20 @@ async def handle_business_message(message: types.Message):
     if new_profile:
         db.update_user_profile(sender_id, sender_name, new_profile)
 
-    # 2. ЕСЛИ ЧАТ НА ПАУЗЕ: Бот не отвечает в чат, но расшифровывает ГС/фото и слабёт тебе сводку
-    if is_paused:
-        logging.info(f"⏸️ ЧАТ НА ПАУЗЕ. Бот молчит в чате, но отправляет разбор вам в ЛС.")
-        if message.voice or message.photo or category == "urgent":
+    # 3. ЕСЛИ ЧАТ НА ПАУЗЕ И ЭТО НЕ ГС — отправляем разбор скриншота/текста только в ЛС
+    if was_paused and not message.voice:
+        logging.info(f"⏸️ Чат на паузе. Обычное сообщение/скриншот обработаны только для ЛС.")
+        if message.photo or category == "urgent":
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
             ]])
-            info_msg = f"📩 <b>Входящее сообщение (Чат на паузе)</b> от {sender_name}:\n"
+            info_msg = f"📩 <b>Разбор медиа/скриншота (Чат на паузе)</b> от {sender_name}:\n"
             if summary:
-                info_msg += f"\n💡 <b>Расшифровка/Контекст:</b> {summary}"
+                info_msg += f"\n💡 <b>Контекст:</b> {summary}"
             await bot.send_message(MY_ID, info_msg, reply_markup=kb)
         return
 
-    # 3. ЕСЛИ ЧАТ НЕ НА ПАУЗЕ — Стандартные режимы
-    status = db.get_status()
-
-    if status == "ignore":
-        await asyncio.sleep(2)
-        await message.answer("[ИИ-Ассистент] Пользователь временно не на связи.")
-        return
-
-    if status == "sleep":
-        db.save_night_message(sender_name, text or "[Голосовое сообщение/Медиа]")
-        await asyncio.sleep(2)
-        await message.answer("[ИИ-Ассистент] Пользователь спит. Сообщение передам утром.")
-        return
-
-    if status == "busy":
-        if "срочно" not in text.lower():
-            await asyncio.sleep(2)
-            await message.answer("[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.")
-            return
-
+    # 4. ОБРАБОТКА И ОТВЕТЫВ О Б Ы Ч Н О М   Р Е Ж И М Е
     if analysis.get("tone_warning"):
         await bot.send_message(
             MY_ID,
@@ -261,15 +264,22 @@ async def handle_business_message(message: types.Message):
             msg_out += f"\n\n💡 <i>Контекст:</i> {summary}"
         await bot.send_message(MY_ID, msg_out, reply_markup=kb_actions)
 
-    elif category in ["formal", "tech_vpn", "urgent"]:
+    elif category in ["formal", "tech_vpn", "urgent"] or message.voice:
         await asyncio.sleep(2)
         reply_text = analysis.get("suggested_reply")
-        if reply_text:
-            await message.answer(reply_text)
-            report_msg = f"🤖 <b>ИИ ответил {sender_name}:</b>\n{reply_text}"
-            if summary:
-                report_msg += f"\n💡 <b>Контекст:</b> {summary}"
+        
+        # Если пришёл скриншот (тех. вопрос с фото), отправляем разбор ТОЛЬКО тебе
+        if message.photo and category == "tech_vpn":
+            report_msg = f"📸 <b>Разбор скриншота от {sender_name}:</b>\n💡 <b>ИИ определил:</b> {summary}"
             await bot.send_message(MY_ID, report_msg, reply_markup=kb_actions)
+        else:
+            # Обычные текстовые сообщения и ГС присылают ответ собеседнику
+            if reply_text:
+                await message.answer(reply_text)
+                report_msg = f"🤖 <b>ИИ ответил {sender_name}:</b>\n{reply_text}"
+                if summary:
+                    report_msg += f"\n💡 <b>Контекст/Расшифровка:</b> {summary}"
+                await bot.send_message(MY_ID, report_msg, reply_markup=kb_actions)
 
 @dp.callback_query(F.data.startswith("ban_"))
 async def callback_ban(callback: types.CallbackQuery):
