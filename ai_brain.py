@@ -13,6 +13,7 @@ SYSTEM_PROMPT = """
 {
   "category": "formal" | "tech_vpn" | "urgent" | "personal",
   "summary": "Краткое описание сути сообщения (на русском)",
+  "user_profile": "Обновленное короткое досье о человеке (1-2 предложения: кто он, о чем пишет, важные факты)",
   "suggested_reply": "Текст ответа от имени ассистента (или null, если category=='personal')"
 }
 
@@ -25,15 +26,23 @@ SYSTEM_PROMPT = """
 ПРАВИЛА ДЛЯ ГОЛОСОВЫХ И МЕДИА:
 - Если прикреплено аудиосообщение, расшифруй его текст и отрази суть в "summary" (например: "Голосовое: спрашивает про...").
 
+ПРАВИЛА ДЛЯ ДОСЬЕ (user_profile):
+- Тебе может быть передано текущее досье человека в блоке [ТЕКУЩЕЕ ДОСЬЕ].
+- Обнови его или дополни новыми фактами на основе свежего сообщения (например: "Одногруппник, спрашивает про ДЗ по физике" или "Ищет помощь с настройкой VPN").
+
 ПРАВИЛА ДЛЯ suggested_reply:
 - Ответ должен быть вежливым и естественным от лица ИИ-ассистента: "[ИИ-Ассистент] ..."
 - Отвечай кратко и по существу сообщения. Если спросили "как дела", ответь, что у владельца все хорошо, сейчас он занят, но сообщение передано.
 - Если категория "personal", поставь suggested_reply: null.
 """
 
-def analyze_message(text: str = "", photo_path: str = None, voice_path: str = None) -> dict:
+def analyze_message(text: str = "", photo_path: str = None, voice_path: str = None, user_profile: str = "") -> dict:
     contents = []
     
+    # Если есть старое досье, передаем его контекстом в Gemini
+    if user_profile:
+        contents.append(f"[ТЕКУЩЕЕ ДОСЬЕ ПОЛЬЗОВАТЕЛЯ]: {user_profile}")
+
     if text:
         contents.append(text)
     
@@ -59,7 +68,7 @@ def analyze_message(text: str = "", photo_path: str = None, voice_path: str = No
 
     try:
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash-lite",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -72,5 +81,6 @@ def analyze_message(text: str = "", photo_path: str = None, voice_path: str = No
         return {
             "category": "formal",
             "summary": "Ошибка работы ИИ",
+            "user_profile": user_profile,
             "suggested_reply": "[ИИ-Ассистент] Здравствуйте! Сообщение получено, передам владельцу."
         }

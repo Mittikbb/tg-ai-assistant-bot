@@ -30,6 +30,25 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 1.3 Таблица досье собеседников (память ИИ)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users_profiles (
+            user_id INTEGER PRIMARY KEY,
+            user_name TEXT,
+            notes TEXT DEFAULT ''
+        )
+    """)
+
+    # 1.4 Таблица статистики ответов
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stats_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            category TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('status', 'default')")
     conn.commit()
@@ -88,5 +107,49 @@ def pop_night_messages() -> list:
     conn.commit()
     conn.close()
     return rows
+
+# --- Работа с Досье и Заметками (3.1) ---
+
+def get_user_profile(user_id: int) -> str:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT notes FROM users_profiles WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else ""
+
+def update_user_profile(user_id: int, user_name: str, new_note: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO users_profiles (user_id, user_name, notes)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            user_name = excluded.user_name,
+            notes = excluded.notes
+    """, (user_id, user_name, new_note))
+    conn.commit()
+    conn.close()
+
+# --- Работа со Статистикой (3.2) ---
+
+def log_stat(user_id: int, category: str):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO stats_log (user_id, category) VALUES (?, ?)", (user_id, category))
+    conn.commit()
+    conn.close()
+
+def get_stats_summary() -> dict:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM stats_log")
+    total = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT category, COUNT(*) FROM stats_log GROUP BY category")
+    by_cat = dict(cursor.fetchall())
+    
+    conn.close()
+    return {"total": total, "categories": by_cat}
 
 init_db()
