@@ -28,13 +28,6 @@ def init_db():
         )
     """)
 
-    # Таблица чатов с включенным няшным стилем автозамены сообщений
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS cute_chats (
-            chat_id INTEGER PRIMARY KEY
-        )
-    """)
-
     # Таблица чатов с ПОЛНОСТЬЮ отключенным автоответчиком
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS disabled_chats (
@@ -52,7 +45,7 @@ def init_db():
         )
     """)
 
-    # 1.3 Таблица досье собеседников (память ИИ)
+    # Таблица досье собеседников (память ИИ)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users_profiles (
             user_id INTEGER PRIMARY KEY,
@@ -61,7 +54,7 @@ def init_db():
         )
     """)
 
-    # 1.4 Таблица статистики ответов
+    # Таблица статистики ответов
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS stats_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +67,8 @@ def init_db():
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('status', 'default')")
     conn.commit()
     conn.close()
+
+# --- Статусы бота ---
 
 def get_status() -> str:
     conn = sqlite3.connect(DB_NAME)
@@ -89,6 +84,8 @@ def set_status(status_name: str):
     cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
     conn.commit()
     conn.close()
+
+# --- Черный список (Blacklist) ---
 
 def is_blacklisted(user_id: int) -> bool:
     conn = sqlite3.connect(DB_NAME)
@@ -112,7 +109,7 @@ def remove_from_blacklist(user_id: int):
     conn.commit()
     conn.close()
 
-# --- Работа с Агрессивным режимом по ID ---
+# --- Агрессивный режим по ID ---
 
 def is_aggressive(user_id: int) -> bool:
     conn = sqlite3.connect(DB_NAME)
@@ -136,31 +133,7 @@ def remove_from_aggressive(user_id: int):
     conn.commit()
     conn.close()
 
-# --- Работа с Няшным режимом автозамены по ID чата ---
-
-def is_cute_chat(chat_id: int) -> bool:
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT chat_id FROM cute_chats WHERE chat_id = ?", (chat_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
-
-def add_to_cute_chats(chat_id: int):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO cute_chats (chat_id) VALUES (?)", (chat_id,))
-    conn.commit()
-    conn.close()
-
-def remove_from_cute_chats(chat_id: int):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM cute_chats WHERE chat_id = ?", (chat_id,))
-    conn.commit()
-    conn.close()
-
-# --- Работа с отключенными чатами (полный запрет автоответа) ---
+# --- Отключенные чаты (полный запрет автоответа) ---
 
 def is_chat_disabled(chat_id: int) -> bool:
     conn = sqlite3.connect(DB_NAME)
@@ -184,7 +157,7 @@ def enable_chat(chat_id: int):
     conn.commit()
     conn.close()
 
-# --- Работа с ночными логами ---
+# --- Ночные логи ---
 
 def save_night_message(sender_name: str, text: str):
     conn = sqlite3.connect(DB_NAME)
@@ -203,7 +176,7 @@ def pop_night_messages() -> list:
     conn.close()
     return rows
 
-# --- Работа с Досье и Заметками (3.1) ---
+# --- Досье и заметки ---
 
 def get_user_profile(user_id: int) -> str:
     conn = sqlite3.connect(DB_NAME)
@@ -226,7 +199,7 @@ def update_user_profile(user_id: int, user_name: str, new_note: str):
     conn.commit()
     conn.close()
 
-# --- Работа со Статистикой (3.2) ---
+# --- Статистика ---
 
 def log_stat(user_id: int, category: str):
     conn = sqlite3.connect(DB_NAME)

@@ -67,9 +67,8 @@ async def cmd_start(message: types.Message):
         "/enable_chat ID — Включить автоответ в чате\n"
         "/aggressive ID — Включить агрессивный режим\n"
         "/unaggressive ID — Выключить агрессивный режим\n"
-        "/cute ID — Включить няшный автоформат в чате\n"
-        "/uncute ID — Выключить няшный автоформат\n"
-        "/unban ID — Разблокировать пользователя"
+        "/unban ID — Разблокировать пользователя\n\n"
+        "✨ <b>Няшный режим:</b> Начни сообщение с символа <code>~</code> (например: <code>~привет</code>)"
     )
 
 @dp.message(Command("default"))
@@ -197,34 +196,6 @@ async def cmd_unaggressive(message: types.Message):
     db.remove_from_aggressive(target_id)
     await message.answer(f"🟢 Агрессивный режим <b>отключен</b> для пользователя <code>{target_id}</code>.")
 
-@dp.message(Command("cute"))
-async def cmd_cute(message: types.Message):
-    if message.from_user.id != MY_ID:
-        return
-    
-    args = message.text.split()
-    if len(args) < 2 or not args[1].lstrip('-').isdigit():
-        await message.answer("⚠️ Использование: <code>/cute ID_ЧАТА</code>")
-        return
-    
-    chat_id = int(args[1])
-    db.add_to_cute_chats(chat_id)
-    await message.answer(f"🌸 Няшный автоформат <b>включен</b> для чата <code>{chat_id}</code>! Все твои сообщения там будут перезаписываться.")
-
-@dp.message(Command("uncute"))
-async def cmd_uncute(message: types.Message):
-    if message.from_user.id != MY_ID:
-        return
-    
-    args = message.text.split()
-    if len(args) < 2 or not args[1].lstrip('-').isdigit():
-        await message.answer("⚠️ Использование: <code>/uncute ID_ЧАТА</code>")
-        return
-    
-    chat_id = int(args[1])
-    db.remove_from_cute_chats(chat_id)
-    await message.answer(f"🛑 Няшный автоформат <b>отключен</b> для чата <code>{chat_id}</code>.")
-
 # --- Обработка бизнес-сообщений ---
 
 @dp.business_message()
@@ -241,19 +212,22 @@ async def handle_business_message(message: types.Message):
     if sender_id == MY_ID:
         user_last_manual_msg[chat_id] = time.time()
         
-        # --- АВТОФОРМАТИРОВАНИЕ НЯШНЫХ СООБЩЕНИЙ ---
-        if db.is_cute_chat(chat_id) and text:
-            try:
-                cute_text = make_cute_text(text)
-                if cute_text and cute_text != text:
-                    await bot.edit_message_text(
-                        text=cute_text,
-                        chat_id=chat_id,
-                        message_id=message.message_id,
-                        business_connection_id=message.business_connection_id
-                    )
-            except Exception as e:
-                logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+        # --- ФОРМАТИРОВАНИЕ ПО ПРЕФИКСУ ~ ---
+        if text.startswith("~"):
+            clean_text = text[1:].strip()
+            if clean_text:
+                try:
+                    cute_text = make_cute_text(clean_text)
+                    if cute_text:
+                        await bot.edit_message_text(
+                            text=cute_text,
+                            chat_id=chat_id,
+                            message_id=message.message_id,
+                            business_connection_id=message.business_connection_id,
+                            parse_mode=None  # Отключаем HTML-парсер
+                        )
+                except Exception as e:
+                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
         
         # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
         if not was_paused:
@@ -447,8 +421,6 @@ async def main():
         BotCommand(command="enable_chat", description="Вкл автоответ (/enable_chat ID)"),
         BotCommand(command="aggressive", description="Вкл агрессию (/aggressive ID)"),
         BotCommand(command="unaggressive", description="Выкл агрессию (/unaggressive ID)"),
-        BotCommand(command="cute", description="Вкл няшный режим (/cute ID)"),
-        BotCommand(command="uncute", description="Выкл няшный режим (/uncute ID)"),
         BotCommand(command="unban", description="Разблокировать (/unban ID)")
     ]
     await bot.set_my_commands(commands)
