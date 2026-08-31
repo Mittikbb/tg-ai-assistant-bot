@@ -69,7 +69,7 @@ def make_cute_text(text: str) -> str:
         return text
     try:
         response = ai_client.models.generate_content(
-            model="gemini-3.5-flash-lite",
+            model="gemini-2.5-flash",
             contents=[text],
             config=types.GenerateContentConfig(
                 system_instruction=CUTE_STYLE_PROMPT,
@@ -96,4 +96,40 @@ def analyze_message(text: str = "", photo_path: str = None, voice_path: str = No
         contents.append(text)
     
     # Добавляем изображение, если передано
-    if photo_path and os.path.exists(
+    if photo_path and os.path.exists(photo_path):
+        with open(photo_path, "rb") as f:
+            image_bytes = f.read()
+        contents.append(
+            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+        )
+
+    # Добавляем голосовое сообщение, если передано
+    if voice_path and os.path.exists(voice_path):
+        with open(voice_path, "rb") as f:
+            voice_bytes = f.read()
+        contents.append(
+            types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")
+        )
+
+    # Если вообще ничего не передано
+    if not contents:
+        contents.append("[Пустое сообщение]")
+
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json"
+            )
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        print(f"Ошибка Gemini API: {e}")
+        return {
+            "category": "formal",
+            "summary": "Ошибка работы ИИ",
+            "user_profile": user_profile,
+            "suggested_reply": "[ИИ-Ассистент] Здравствуйте! Сообщение получено, передам владельцу."
+        }
