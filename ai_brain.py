@@ -69,7 +69,7 @@ def make_cute_text(text: str) -> str:
         return text
     try:
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash-lite",
             contents=[text],
             config=types.GenerateContentConfig(
                 system_instruction=CUTE_STYLE_PROMPT,
