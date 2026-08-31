@@ -27,6 +27,20 @@ def init_db():
             user_id INTEGER PRIMARY KEY
         )
     """)
+
+    # Таблица чатов с включенным няшным стилем автозамены сообщений
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cute_chats (
+            chat_id INTEGER PRIMARY KEY
+        )
+    """)
+
+    # Таблица чатов с ПОЛНОСТЬЮ отключенным автоответчиком
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS disabled_chats (
+            chat_id INTEGER PRIMARY KEY
+        )
+    """)
     
     # Таблица для ночных сообщений
     cursor.execute("""
@@ -119,6 +133,54 @@ def remove_from_aggressive(user_id: int):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM aggressive_users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+# --- Работа с Няшным режимом автозамены по ID чата ---
+
+def is_cute_chat(chat_id: int) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM cute_chats WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+def add_to_cute_chats(chat_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO cute_chats (chat_id) VALUES (?)", (chat_id,))
+    conn.commit()
+    conn.close()
+
+def remove_from_cute_chats(chat_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM cute_chats WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+# --- Работа с отключенными чатами (полный запрет автоответа) ---
+
+def is_chat_disabled(chat_id: int) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT chat_id FROM disabled_chats WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+def disable_chat(chat_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO disabled_chats (chat_id) VALUES (?)", (chat_id,))
+    conn.commit()
+    conn.close()
+
+def enable_chat(chat_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM disabled_chats WHERE chat_id = ?", (chat_id,))
     conn.commit()
     conn.close()
 

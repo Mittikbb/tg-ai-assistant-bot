@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from aiohttp import web
 
 import db
-from ai_brain import analyze_message
+from ai_brain import analyze_message, make_cute_text
 
 load_dotenv()
 
@@ -20,7 +20,6 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MY_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 
-# --- Логика автопаузы бота при твоих ответах ---
 user_last_manual_msg = {}
 PAUSE_TIMEOUT = 600  # 10 минут (в секундах)
 
@@ -64,8 +63,12 @@ async def cmd_start(message: types.Message):
         "/busy — Режим «Занят»\n"
         "/goodmorning — Утренний дайджест\n"
         "/stats — Статистика ответов\n"
+        "/disable_chat ID — Отключить автоответ в чате\n"
+        "/enable_chat ID — Включить автоответ в чате\n"
         "/aggressive ID — Включить агрессивный режим\n"
         "/unaggressive ID — Выключить агрессивный режим\n"
+        "/cute ID — Включить няшный автоформат в чате\n"
+        "/uncute ID — Выключить няшный автоформат\n"
         "/unban ID — Разблокировать пользователя"
     )
 
@@ -124,13 +127,41 @@ async def cmd_stats(message: types.Message):
     
     await message.answer(text)
 
+@dp.message(Command("disable_chat"))
+async def cmd_disable_chat(message: types.Message):
+    if message.from_user.id != MY_ID:
+        return
+    
+    args = message.text.split()
+    if len(args) < 2 or not args[1].lstrip('-').isdigit():
+        await message.answer("⚠️ Использование: <code>/disable_chat ID_ЧАТА</code>")
+        return
+    
+    chat_id = int(args[1])
+    db.disable_chat(chat_id)
+    await message.answer(f"🛑 Автоответчик **полностью отключен** для чата <code>{chat_id}</code>!")
+
+@dp.message(Command("enable_chat"))
+async def cmd_enable_chat(message: types.Message):
+    if message.from_user.id != MY_ID:
+        return
+    
+    args = message.text.split()
+    if len(args) < 2 or not args[1].lstrip('-').isdigit():
+        await message.answer("⚠️ Использование: <code>/enable_chat ID_ЧАТА</code>")
+        return
+    
+    chat_id = int(args[1])
+    db.enable_chat(chat_id)
+    await message.answer(f"🟢 Автоответчик **снова включен** для чата <code>{chat_id}</code>!")
+
 @dp.message(Command("unban"))
 async def cmd_unban(message: types.Message):
     if message.from_user.id != MY_ID:
         return
     
     args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
+    if len(args) < 2 or not args[1].lstrip('-').isdigit():
         await message.answer("⚠️ Использование: <code>/unban ID_ПОЛЬЗОВАТЕЛЯ</code>")
         return
     
@@ -144,7 +175,7 @@ async def cmd_aggressive(message: types.Message):
         return
     
     args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
+    if len(args) < 2 or not args[1].lstrip('-').isdigit():
         await message.answer("⚠️ Использование: <code>/aggressive ID_ПОЛЬЗОВАТЕЛЯ</code>")
         return
     
@@ -158,13 +189,41 @@ async def cmd_unaggressive(message: types.Message):
         return
     
     args = message.text.split()
-    if len(args) < 2 or not args[1].isdigit():
+    if len(args) < 2 or not args[1].lstrip('-').isdigit():
         await message.answer("⚠️ Использование: <code>/unaggressive ID_ПОЛЬЗОВАТЕЛЯ</code>")
         return
     
     target_id = int(args[1])
     db.remove_from_aggressive(target_id)
     await message.answer(f"🟢 Агрессивный режим <b>отключен</b> для пользователя <code>{target_id}</code>.")
+
+@dp.message(Command("cute"))
+async def cmd_cute(message: types.Message):
+    if message.from_user.id != MY_ID:
+        return
+    
+    args = message.text.split()
+    if len(args) < 2 or not args[1].lstrip('-').isdigit():
+        await message.answer("⚠️ Использование: <code>/cute ID_ЧАТА</code>")
+        return
+    
+    chat_id = int(args[1])
+    db.add_to_cute_chats(chat_id)
+    await message.answer(f"🌸 Няшный автоформат <b>включен</b> для чата <code>{chat_id}</code>! Все твои сообщения там будут перезаписываться.")
+
+@dp.message(Command("uncute"))
+async def cmd_uncute(message: types.Message):
+    if message.from_user.id != MY_ID:
+        return
+    
+    args = message.text.split()
+    if len(args) < 2 or not args[1].lstrip('-').isdigit():
+        await message.answer("⚠️ Использование: <code>/uncute ID_ЧАТА</code>")
+        return
+    
+    chat_id = int(args[1])
+    db.remove_from_cute_chats(chat_id)
+    await message.answer(f"🛑 Няшный автоформат <b>отключен</b> для чата <code>{chat_id}</code>.")
 
 # --- Обработка бизнес-сообщений ---
 
@@ -175,13 +234,26 @@ async def handle_business_message(message: types.Message):
     sender_name = message.from_user.first_name or "Пользователь"
     text = message.text or message.caption or ""
 
-    # Проверяем, находится ли чат уже на паузе
     last_msg_time = user_last_manual_msg.get(chat_id, 0)
     was_paused = (time.time() - last_msg_time < PAUSE_TIMEOUT)
 
     # 1. Если сообщение отправлено ТОБОЙ (пишешь сам вручную)
     if sender_id == MY_ID:
         user_last_manual_msg[chat_id] = time.time()
+        
+        # --- АВТОФОРМАТИРОВАНИЕ НЯШНЫХ СООБЩЕНИЙ ---
+        if db.is_cute_chat(chat_id) and text:
+            try:
+                cute_text = make_cute_text(text)
+                if cute_text and cute_text != text:
+                    await bot.edit_message_text(
+                        text=cute_text,
+                        chat_id=chat_id,
+                        message_id=message.message_id,
+                        business_connection_id=message.business_connection_id
+                    )
+            except Exception as e:
+                logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
         
         # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
         if not was_paused:
@@ -196,27 +268,32 @@ async def handle_business_message(message: types.Message):
             )
         return
 
-    try:
-        await bot.read_business_message(
-            business_connection_id=message.business_connection_id,
-            chat_id=message.chat.id,
-            message_id=message.message_id
-        )
-    except Exception as e:
-        logging.warning(f"Не удалось прочитать сообщение: {e}")
-
-    if db.is_blacklisted(sender_id):
+    # Проверка глобальных запретов (Черный список или Отключенный чат)
+    if db.is_blacklisted(sender_id) or db.is_chat_disabled(chat_id):
         return
 
-    # 2. ПРОВЕРКА СПЕЦИАЛЬНЫХ РЕЖИМОВ (Сплю / Игнор / Занят) — срабатывают Всегда
+    # 2. ПРОВЕРКА СПЕЦИАЛЬНЫХ РЕЖИМОВ И ПАУЗЫ
     status = db.get_status()
 
+    # Прочитываем сообщение ТОЛЬКО если бот реально собирается отвечать/обрабатывать
+    async def mark_read():
+        try:
+            await bot.read_business_message(
+                business_connection_id=message.business_connection_id,
+                chat_id=chat_id,
+                message_id=message.message_id
+            )
+        except Exception as e:
+            logging.warning(f"Не удалось прочитать сообщение: {e}")
+
     if status == "ignore":
+        await mark_read()
         await asyncio.sleep(2)
         await message.answer("[ИИ-Ассистент] Пользователь временно не на связи.")
         return
 
     if status == "sleep":
+        await mark_read()
         db.save_night_message(sender_name, text or "[Голосовое сообщение/Медиа]")
         await asyncio.sleep(2)
         await message.answer("[ИИ-Ассистент] Пользователь спит. Сообщение передам утром.")
@@ -224,11 +301,25 @@ async def handle_business_message(message: types.Message):
 
     if status == "busy":
         if "срочно" not in text.lower():
+            await mark_read()
             await asyncio.sleep(2)
             await message.answer("[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.")
             return
 
-    # Скачивание фото (если есть)
+    # Если чат на временной 10-минутной паузе после ручного ответа
+    if was_paused and not message.voice:
+        # Сообщение НЕ отмечаем прочитанным, чтобы ты увидел его в Telegram
+        if message.photo or "срочно" in text.lower():
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
+            ]])
+            info_msg = f"📩 <b>Разбор медиа/срочного (Чат на паузе)</b> от {sender_name}:\nТекст: {text}"
+            await bot.send_message(MY_ID, info_msg, reply_markup=kb)
+        return
+
+    # Отмечаем прочитанным, так как переходим к полному анализу и автоответу
+    await mark_read()
+
     photo_path = None
     if message.photo:
         photo = message.photo[-1]
@@ -236,21 +327,17 @@ async def handle_business_message(message: types.Message):
         photo_path = f"temp_{photo.file_id}.jpg"
         await bot.download_file(file_info.file_path, photo_path)
 
-    # Скачивание голосового сообщения (если есть)
     voice_path = None
     if message.voice:
         file_info = await bot.get_file(message.voice.file_id)
         voice_path = f"temp_{message.voice.file_id}.ogg"
         await bot.download_file(file_info.file_path, voice_path)
 
-    # Достаём текущее досье на человека и статус агрессивного режима
     user_profile = db.get_user_profile(sender_id)
     is_aggr = db.is_aggressive(sender_id)
 
-    # Передаём тексты, файлы, досье и флаг агрессии в ИИ
     analysis = analyze_message(text, photo_path, voice_path, user_profile, is_aggressive=is_aggr)
 
-    # Удаляем временные файлы
     if photo_path and os.path.exists(photo_path):
         os.remove(photo_path)
     if voice_path and os.path.exists(voice_path):
@@ -260,32 +347,17 @@ async def handle_business_message(message: types.Message):
     summary = analysis.get("summary", "")
     new_profile = analysis.get("user_profile")
 
-    # Логируем статистику и обновляем досье
     db.log_stat(sender_id, category)
     if new_profile:
         db.update_user_profile(sender_id, sender_name, new_profile)
 
-    # 3. ЕСЛИ ЧАТ НА ПАУЗЕ И ЭТО НЕ ГС — отправляем разбор скриншота/текста только в ЛС
-    if was_paused and not message.voice:
-        logging.info(f"⏸️ Чат на паузе. Обычное сообщение/скриншот обработаны только для ЛС.")
-        if message.photo or category == "urgent":
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
-            ]])
-            info_msg = f"📩 <b>Разбор медиа/скриншота (Чат на паузе)</b> от {sender_name}:\n"
-            if summary:
-                info_msg += f"\n💡 <b>Контекст:</b> {summary}"
-            await bot.send_message(MY_ID, info_msg, reply_markup=kb)
-        return
-
-    # 4. ОБРАБОТКА И ОТВЕТЫ В ОБЫЧНОМ / АГРЕССИВНОМ РЕЖИМЕ
+    # 3. ОБРАБОТКА И ОТВЕТЫ
     if analysis.get("tone_warning"):
         await bot.send_message(
             MY_ID,
             f"⚠️ <b>Внимание: Повышенный тон!</b>\nОт: <code>{sender_name}</code>\nТекст: <i>{text or '[Голосовое/Медиа]'}</i>"
         )
 
-    # Динамическая кнопка для агрессивного режима
     aggr_btn = InlineKeyboardButton(text="🟢 Выкл Агрессию", callback_data=f"unaggr_{sender_id}") if is_aggr else InlineKeyboardButton(text="🔥 Вкл Агрессию", callback_data=f"aggr_{sender_id}")
 
     kb_actions = InlineKeyboardMarkup(inline_keyboard=[
@@ -306,12 +378,10 @@ async def handle_business_message(message: types.Message):
         await asyncio.sleep(2)
         reply_text = analysis.get("suggested_reply")
         
-        # Если пришёл скриншот (тех. вопрос с фото), отправляем разбор ТОЛЬКО тебе
         if message.photo and category == "tech_vpn":
             report_msg = f"📸 <b>Разбор скриншота от {sender_name}:</b>\n💡 <b>ИИ определил:</b> {summary}"
             await bot.send_message(MY_ID, report_msg, reply_markup=kb_actions)
         else:
-            # Обычные текстовые сообщения и ГС присылают ответ собеседнику
             if reply_text:
                 await message.answer(reply_text)
                 aggr_tag = " 🔥 [АГРЕССИВНЫЙ]" if is_aggr else ""
@@ -319,6 +389,8 @@ async def handle_business_message(message: types.Message):
                 if summary:
                     report_msg += f"\n💡 <b>Контекст/Расшифровка:</b> {summary}"
                 await bot.send_message(MY_ID, report_msg, reply_markup=kb_actions)
+
+# --- Инлайн-кнопки ---
 
 @dp.callback_query(F.data.startswith("ban_"))
 async def callback_ban(callback: types.CallbackQuery):
@@ -344,14 +416,14 @@ async def callback_unaggr(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("resume_"))
 async def callback_resume(callback: types.CallbackQuery):
     chat_id = int(callback.data.split("_")[1])
-    user_last_manual_msg[chat_id] = 0  # Сбрасываем таймер паузы
+    user_last_manual_msg[chat_id] = 0
     await callback.answer("Автоответчик возобновлен для этого чата!", show_alert=True)
     await callback.message.edit_text(f"▶️ <b>Автоответчик снова активен</b> для чата <code>{chat_id}</code>.")
 
 @dp.callback_query(F.data.startswith("pause_"))
 async def callback_pause(callback: types.CallbackQuery):
     chat_id = int(callback.data.split("_")[1])
-    user_last_manual_msg[chat_id] = time.time()  # Включаем паузу
+    user_last_manual_msg[chat_id] = time.time()
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="▶️ Включить автоответ в чате", callback_data=f"resume_{chat_id}")
     ]])
@@ -371,8 +443,12 @@ async def main():
         BotCommand(command="busy", description="Режим Занят"),
         BotCommand(command="goodmorning", description="Утренняя сводка"),
         BotCommand(command="stats", description="Статистика ответов"),
+        BotCommand(command="disable_chat", description="Выкл автоответ (/disable_chat ID)"),
+        BotCommand(command="enable_chat", description="Вкл автоответ (/enable_chat ID)"),
         BotCommand(command="aggressive", description="Вкл агрессию (/aggressive ID)"),
         BotCommand(command="unaggressive", description="Выкл агрессию (/unaggressive ID)"),
+        BotCommand(command="cute", description="Вкл няшный режим (/cute ID)"),
+        BotCommand(command="uncute", description="Выкл няшный режим (/uncute ID)"),
         BotCommand(command="unban", description="Разблокировать (/unban ID)")
     ]
     await bot.set_my_commands(commands)

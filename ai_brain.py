@@ -47,10 +47,40 @@ AGGRESSIVE_REPLY_INSTRUCTION = """
 ПРАВИЛА ДЛЯ suggested_reply (АГРЕССИВНЫЙ/АДАПТИВНЫЙ РЕЖИМ):
 - Ответ ВСЕГДА начинается с префикса: "[ИИ-Ассистент] ..."
 - ОБЯЗАТЕЛЬНО давай ответ на сам вопрос или суть сообщения (не теряй смысл диалога!), но регулируй степень жесткости:
-  1. Если собеседник НАПИСАЛ С АГРЕССИЕЙ, дерзит, грубит, винит или наезжает: отвечай максимально жестко, язвительно, можешь откровенно токсичить, подкалывать и ставить его на место.
+  1. Если собеседник НАПИСАЛ С АГРЕССИВНЫЙ, дерзит, грубит, винит или наезжает: отвечай максимально жестко, язвительно, можешь откровенно токсичить, подкалывать и ставить его на место.
   2. Если собеседник ПИШЕТ СПОКОЙНО / АДЕКВАТНО: ответь на его вопрос по существу, но в конце добавь дерзкую подколку, сарказм или легкое «посылание» (например: «...а теперь не отвлекай по пустякам» или «...иди гугли дальше»).
 - Если категория "personal", поставь suggested_reply: null.
 """
+
+# Промпт для няшного / кавайного форматирования сообщений
+CUTE_STYLE_PROMPT = """
+Ты — стилизатор текста. Твоя задача — взять исходный текст пользователя и переписать его в ультра-милом, «няшном», эстетичном и кавайном аниме-стиле.
+
+ПРАВИЛА СТИЛИЗАЦИИ:
+1. Сохраняй исходный смысл (даже если там мат, агрессия или грубость — преврати это в абсурдно-милый контраст!).
+2. Используй характерные декоративные символы и рамки: ✦•°: ... :•°✦, ✧ * ... * ✧, 🌸, 🌻, ૮₍ ˶• ˕ •˶ ₎ა, :3, >w<.
+3. Добавляй милые заикания на словах (например: «к-какой», «п-почему», «н-нахуй»), милые междометия («уву», «ня», «хнык») и текстовые действия в звездочках (например: *тихо плачет*, *гладит по голове*, *дуется*).
+4. Возвращай ТОЛЬКО полученный измененный текст. Никаких кавычек, пояснений или Markdown-блоков.
+"""
+
+def make_cute_text(text: str) -> str:
+    """Переписывает отправленное сообщение в милый/няшный стиль"""
+    if not text:
+        return text
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=[text],
+            config=types.GenerateContentConfig(
+                system_instruction=CUTE_STYLE_PROMPT,
+                temperature=0.8
+            )
+        )
+        result = response.text.strip()
+        return result if result else text
+    except Exception as e:
+        logging.error(f"Ошибка стилизации Gemini: {e}")
+        return text
 
 def analyze_message(text: str = "", photo_path: str = None, voice_path: str = None, user_profile: str = "", is_aggressive: bool = False) -> dict:
     contents = []
@@ -66,40 +96,4 @@ def analyze_message(text: str = "", photo_path: str = None, voice_path: str = No
         contents.append(text)
     
     # Добавляем изображение, если передано
-    if photo_path and os.path.exists(photo_path):
-        with open(photo_path, "rb") as f:
-            image_bytes = f.read()
-        contents.append(
-            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
-        )
-
-    # Добавляем голосовое сообщение, если передано
-    if voice_path and os.path.exists(voice_path):
-        with open(voice_path, "rb") as f:
-            voice_bytes = f.read()
-        contents.append(
-            types.Part.from_bytes(data=voice_bytes, mime_type="audio/ogg")
-        )
-
-    # Если вообще ничего не передано
-    if not contents:
-        contents.append("[Пустое сообщение]")
-
-    try:
-        response = ai_client.models.generate_content(
-            model="gemini-3.5-flash-lite",
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json"
-            )
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        print(f"Ошибка Gemini API: {e}")
-        return {
-            "category": "formal",
-            "summary": "Ошибка работы ИИ",
-            "user_profile": user_profile,
-            "suggested_reply": "[ИИ-Ассистент] Здравствуйте! Сообщение получено, передам владельцу."
-        }
+    if photo_path and os.path.exists(
