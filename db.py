@@ -68,22 +68,31 @@ def init_db():
     conn.commit()
     conn.close()
 
+_status_cache = None
+
 # --- Статусы бота ---
 
 def get_status() -> str:
+    global _status_cache
+    if _status_cache is not None:
+        return _status_cache
+
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = 'status'")
     row = cursor.fetchone()
     conn.close()
-    return row[0] if row else "default"
+    _status_cache = row[0] if row else "default"
+    return _status_cache
 
 def set_status(status_name: str):
+    global _status_cache
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
     conn.commit()
     conn.close()
+    _status_cache = status_name
 
 # --- Черный список (Blacklist) ---
 
