@@ -79,12 +79,12 @@ CUTE_STYLE_PROMPT = """
 - Никаких системных пояснений, кавычек, вводных слов («Вот ваш текст:») и Markdown-блоков кода.
 """
 
-def make_cute_text(text: str) -> str:
+async def make_cute_text(text: str) -> str:
     """Переписывает отправленное сообщение в милый/няшный стиль"""
     if not text:
         return text
     try:
-        response = ai_client.models.generate_content(
+        response = await ai_client.aio.models.generate_content(
             model="gemini-3.5-flash-lite",
             contents=[text],
             config=types.GenerateContentConfig(
@@ -98,7 +98,7 @@ def make_cute_text(text: str) -> str:
         logging.error(f"Ошибка стилизации Gemini: {e}")
         return text
 
-def analyze_message(text: str = "", photo_path: str = None, voice_path: str = None, user_profile: str = "", is_aggressive: bool = False) -> dict:
+async def analyze_message(text: str = "", photo_path: str = None, voice_path: str = None, user_profile: str = "", is_aggressive: bool = False) -> dict:
     contents = []
     
     # Формируем динамический системный промпт в зависимости от режима
@@ -132,7 +132,7 @@ def analyze_message(text: str = "", photo_path: str = None, voice_path: str = No
         contents.append("[Пустое сообщение]")
 
     try:
-        response = ai_client.models.generate_content(
+        response = await ai_client.aio.models.generate_content(
             model="gemini-3.5-flash-lite",
             contents=contents,
             config=types.GenerateContentConfig(
