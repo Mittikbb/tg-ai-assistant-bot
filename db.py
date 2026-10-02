@@ -2,8 +2,16 @@ import sqlite3
 
 DB_NAME = "business_bot.db"
 
+_conn = None
+
+def get_conn():
+    global _conn
+    if _conn is None:
+        _conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    return _conn
+
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     
     # Таблица текущих настроек и статусов
@@ -66,7 +74,6 @@ def init_db():
     
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('status', 'default')")
     conn.commit()
-    conn.close()
 
 _status_cache = None
 
@@ -77,126 +84,112 @@ def get_status() -> str:
     if _status_cache is not None:
         return _status_cache
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key = 'status'")
     row = cursor.fetchone()
-    conn.close()
     _status_cache = row[0] if row else "default"
     return _status_cache
 
 def set_status(status_name: str):
     global _status_cache
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
     conn.commit()
-    conn.close()
     _status_cache = status_name
 
 # --- Черный список (Blacklist) ---
 
 def is_blacklisted(user_id: int) -> bool:
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM blacklist WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
-    conn.close()
     return row is not None
 
 def add_to_blacklist(user_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)", (user_id,))
     conn.commit()
-    conn.close()
 
 def remove_from_blacklist(user_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
     conn.commit()
-    conn.close()
 
 # --- Агрессивный режим по ID ---
 
 def is_aggressive(user_id: int) -> bool:
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM aggressive_users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
-    conn.close()
     return row is not None
 
 def add_to_aggressive(user_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO aggressive_users (user_id) VALUES (?)", (user_id,))
     conn.commit()
-    conn.close()
 
 def remove_from_aggressive(user_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM aggressive_users WHERE user_id = ?", (user_id,))
     conn.commit()
-    conn.close()
 
 # --- Отключенные чаты (полный запрет автоответа) ---
 
 def is_chat_disabled(chat_id: int) -> bool:
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT chat_id FROM disabled_chats WHERE chat_id = ?", (chat_id,))
     row = cursor.fetchone()
-    conn.close()
     return row is not None
 
 def disable_chat(chat_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("INSERT OR IGNORE INTO disabled_chats (chat_id) VALUES (?)", (chat_id,))
     conn.commit()
-    conn.close()
 
 def enable_chat(chat_id: int):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM disabled_chats WHERE chat_id = ?", (chat_id,))
     conn.commit()
-    conn.close()
 
 # --- Ночные логи ---
 
 def save_night_message(sender_name: str, text: str):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO night_logs (sender_name, message_text) VALUES (?, ?)", (sender_name, text))
     conn.commit()
-    conn.close()
 
 def pop_night_messages() -> list:
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT sender_name, message_text FROM night_logs")
     rows = cursor.fetchall()
     cursor.execute("DELETE FROM night_logs")
     conn.commit()
-    conn.close()
     return rows
 
 # --- Досье и заметки ---
 
 def get_user_profile(user_id: int) -> str:
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT notes FROM users_profiles WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
-    conn.close()
     return row[0] if row and row[0] else ""
 
 def update_user_profile(user_id: int, user_name: str, new_note: str):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO users_profiles (user_id, user_name, notes)
@@ -206,19 +199,17 @@ def update_user_profile(user_id: int, user_name: str, new_note: str):
             notes = excluded.notes
     """, (user_id, user_name, new_note))
     conn.commit()
-    conn.close()
 
 # --- Статистика ---
 
 def log_stat(user_id: int, category: str):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO stats_log (user_id, category) VALUES (?, ?)", (user_id, category))
     conn.commit()
-    conn.close()
 
 def get_stats_summary() -> dict:
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_conn()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM stats_log")
     total = cursor.fetchone()[0]
@@ -226,7 +217,6 @@ def get_stats_summary() -> dict:
     cursor.execute("SELECT category, COUNT(*) FROM stats_log GROUP BY category")
     by_cat = dict(cursor.fetchall())
     
-    conn.close()
     return {"total": total, "categories": by_cat}
 
 init_db()
