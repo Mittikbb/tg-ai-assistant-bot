@@ -1670,17 +1670,23 @@ async def main():
     logging.info(f"Запуск панели управления на http://0.0.0.0:{PORT}...")
     await site.start()
 
-    # Установка подсказок команд в Telegram
-    await set_bot_commands(bot)
-
-    # Запуск фонового воркера для напоминаний (Модуль 3)
-    worker_task = asyncio.create_task(reminder_worker(bot))
-
     logging.info("Запуск Telegram-бота...")
+    worker_task = None
     try:
+        # Установка подсказок команд в Telegram
+        try:
+            await set_bot_commands(bot)
+        except Exception as net_err:
+            logging.warning(f"Не удалось обновить команды бота в Telegram (проверьте сеть/VPN): {net_err}")
+
+        # Запуск фонового воркера для напоминаний (Модуль 3)
+        worker_task = asyncio.create_task(reminder_worker(bot))
         await dp.start_polling(bot)
     finally:
-        worker_task.cancel()
+        if worker_task:
+            worker_task.cancel()
+        if bot and bot.session:
+            await bot.session.close()
         await runner.cleanup()
 
 if __name__ == "__main__":
