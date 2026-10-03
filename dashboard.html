@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram AI Assistant • Live Control Center</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    body {
+      background-color: #080b12;
+      color: #f1f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.6);
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(99, 102, 241, 0.3);
+      border-radius: 9999px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: rgba(99, 102, 241, 0.5);
+    }
+    .card-dark {
+      background-color: #0d121f;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .card-dark:hover {
+      border-color: rgba(99, 102, 241, 0.25);
+    }
+  </style>
+</head>
+<body class="min-h-screen selection:bg-indigo-600 selection:text-white">
+
+  <!-- Ambient Dark Glows -->
+  <div class="fixed inset-0 overflow-hidden pointer-events-none -z-10 opacity-25">
+    <div class="absolute -top-40 -left-40 w-96 h-96 rounded-full bg-indigo-600 blur-[128px]"></div>
+    <div class="absolute top-1/2 -right-40 w-96 h-96 rounded-full bg-purple-600 blur-[128px]"></div>
+    <div class="absolute -bottom-40 left-1/3 w-96 h-96 rounded-full bg-cyan-600 blur-[128px]"></div>
+  </div>
+
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Top Bar -->
+    <header class="card-dark rounded-2xl p-5 shadow-2xl flex flex-col lg:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-4 w-full lg:w-auto">
+        <div class="relative shrink-0">
+          <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-indigo-500/20">
+            🤖
+          </div>
+          <span class="absolute -bottom-1 -right-1 flex h-3.5 w-3.5">
+            <span id="syncPulse" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span id="syncDot" class="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border-2 border-[#0d121f]"></span>
+          </span>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="font-extrabold text-lg sm:text-xl tracking-tight text-white">Telegram AI Assistant</h1>
+            <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+              Live Real-Time
+            </span>
+          </div>
+          <p class="text-xs text-slate-400">Прямое подключение к SQLite базе данных и активному боту</p>
+        </div>
+      </div>
+
+      <!-- Controls & Connection Status -->
+      <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto justify-start lg:justify-end text-xs">
+        
+        <!-- Live Status Pill -->
+        <div id="connectionStatusBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span>Подключено: <b id="lastSyncTime" class="text-white">--:--:--</b></span>
+        </div>
+
+        <!-- Server Selector -->
+        <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
+          <span class="text-slate-400 text-[11px]">API:</span>
+          <input 
+            type="text" 
+            id="serverUrlInput" 
+            placeholder="http://localhost:8080" 
+            class="bg-transparent text-xs text-slate-200 focus:outline-none w-48 font-mono"
+            onchange="updateServerUrl()"
+          >
+          <button onclick="fetchLiveData()" title="Обновить сейчас" class="text-slate-400 hover:text-white transition">
+            🔄
+          </button>
+        </div>
+
+        <!-- Render Shortcut -->
+        <button onclick="setRenderUrl()" class="px-2.5 py-1 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/20 text-[11px] transition">
+          Render.com
+        </button>
+      </div>
+    </header>
+
+    <!-- Mode Control Bar -->
+    <div class="card-dark rounded-2xl p-4 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Текущий режим бота:</span>
+        <span id="activeModeBadge" class="px-3 py-1 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-500"></span> DEFAULT
+        </span>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
+        <span class="text-xs text-slate-400 mr-1 hidden sm:inline">Переключить на лету:</span>
+        <button onclick="changeBotMode('default')" id="btn-mode-default" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-emerald-600 hover:text-white border border-slate-700">
+          🟢 Обычный
+        </button>
+        <button onclick="changeBotMode('sleep')" id="btn-mode-sleep" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-indigo-600 hover:text-white border border-slate-700">
+          🌙 Сплю
+        </button>
+        <button onclick="changeBotMode('busy')" id="btn-mode-busy" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-amber-600 hover:text-white border border-slate-700">
+          🎮 Занят
+        </button>
+        <button onclick="changeBotMode('ignore')" id="btn-mode-ignore" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-rose-600 hover:text-white border border-slate-700">
+          🔴 Игнор
+        </button>
+      </div>
+    </div>
+
+    <!-- Live Real Metrics Grid -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
+        <span class="text-xs text-slate-400">Сообщений в базе</span>
+        <p id="metricTotalMsgs" class="text-2xl font-black text-white">0</p>
+        <span class="text-[11px] text-slate-500">По таблице stats_log</span>
+      </div>
+
+      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
+        <span class="text-xs text-slate-400">Активных напоминаний</span>
+        <p id="metricRemindersCount" class="text-2xl font-black text-indigo-400">0</p>
+        <span class="text-[11px] text-slate-500">В статусе pending</span>
+      </div>
+
+      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
+        <span class="text-xs text-slate-400">Сохраненных заметок</span>
+        <p id="metricNotesCount" class="text-2xl font-black text-purple-400">0</p>
+        <span class="text-[11px] text-slate-500">В таблице notes</span>
+      </div>
+
+      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
+        <span class="text-xs text-slate-400">Ночных сообщений</span>
+        <p id="metricNightLogsCount" class="text-2xl font-black text-cyan-400">0</p>
+        <span class="text-[11px] text-slate-500">Для /goodmorning</span>
+      </div>
+    </div>
+
+    <!-- Main Live Sections -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Left Column (8 cols): Reminders & Notes -->
+      <div class="lg:col-span-8 space-y-6">
+
+        <!-- 1. Real Active Reminders Section -->
+        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div class="flex items-center gap-2">
+              <span class="text-indigo-400 text-lg font-bold">⏰</span>
+              <h2 class="font-bold text-base text-white">Активные напоминания в очереди</h2>
+              <span id="badgeRemCount" class="px-2 py-0.5 rounded-full text-xs font-bold bg-indigo-500/20 text-indigo-400">0</span>
+            </div>
+            <span class="text-[11px] text-slate-500">Воркер проверяет каждые 15 сек</span>
+          </div>
+
+          <!-- Reminders List Container -->
+          <div id="remindersContainer" class="space-y-2.5">
+            <!-- Dynamically populated or empty state -->
+          </div>
+        </div>
+
+        <!-- 2. Real Saved Notes Section -->
+        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
+          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div class="flex items-center gap-2">
+              <span class="text-purple-400 text-lg font-bold">📝</span>
+              <h2 class="font-bold text-base text-white">Сохраненные заметки</h2>
+              <span id="badgeNotesCount" class="px-2 py-0.5 rounded-full text-xs font-bold bg-purple-500/20 text-purple-400">0</span>
+            </div>
+
+            <!-- Add Note Button -->
+            <button onclick="toggleAddNoteForm()" class="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow">
+              <span>+ Новая заметка</span>
+            </button>
+          </div>
+
+          <!-- Add Note Inline Form (Hidden by default) -->
+          <div id="addNoteForm" class="hidden p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+            <h3 class="font-semibold text-xs text-purple-300">Создать заметку в БД:</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <select id="newNoteCategory" class="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-purple-500">
+                <option value="Учеба">🎓 Учеба</option>
+                <option value="Покупки">🛒 Покупки</option>
+                <option value="Софт/VPN">💻 Софт / VPN</option>
+                <option value="Идеи">💡 Идеи</option>
+                <option value="Другое">📌 Другое</option>
+              </select>
+              <input 
+                type="text" 
+                id="newNoteContent" 
+                placeholder="Текст заметки..." 
+                class="sm:col-span-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-purple-500"
+              >
+            </div>
+            <div class="flex justify-end gap-2">
+              <button onclick="toggleAddNoteForm()" class="px-3 py-1 rounded-xl text-xs text-slate-400 hover:text-white">Отмена</button>
+              <button onclick="submitNewNote()" class="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold shadow">Сохранить</button>
+            </div>
+          </div>
+
+          <!-- Category Filter Bar -->
+          <div class="flex flex-wrap gap-2 text-xs" id="noteCategoriesFilter">
+            <button onclick="filterNotes('all')" class="cat-chip px-2.5 py-1 rounded-lg bg-purple-600 text-white font-medium" data-cat="all">
+              Все (<span id="count-cat-all">0</span>)
+            </button>
+            <button onclick="filterNotes('Учеба')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Учеба">
+              🎓 Учеба (<span id="count-cat-Учеба">0</span>)
+            </button>
+            <button onclick="filterNotes('Покупки')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Покупки">
+              🛒 Покупки (<span id="count-cat-Покупки">0</span>)
+            </button>
+            <button onclick="filterNotes('Софт/VPN')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Софт/VPN">
+              💻 Софт/VPN (<span id="count-cat-Софт/VPN">0</span>)
+            </button>
+            <button onclick="filterNotes('Идеи')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Идеи">
+              💡 Идеи (<span id="count-cat-Идеи">0</span>)
+            </button>
+            <button onclick="filterNotes('Другое')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Другое">
+              📌 Другое (<span id="count-cat-Другое">0</span>)
+            </button>
+          </div>
+
+          <!-- Notes Container -->
+          <div id="notesContainer" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <!-- Dynamically populated or empty state -->
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Right Column (4 cols): Stats & Night Logs -->
+      <div class="lg:col-span-4 space-y-6">
+
+        <!-- 3. Category Breakdown Stats (Real from stats_log) -->
+        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 class="font-bold text-sm text-white flex items-center gap-2">
+              <span>📊</span> Статистика категорий сообщений
+            </h3>
+            <span class="text-[11px] text-slate-500">stats_log</span>
+          </div>
+
+          <div id="categoryStatsBars" class="space-y-3">
+            <!-- Rendered from real DB counts -->
+          </div>
+        </div>
+
+        <!-- 4. Night Logs (Real from night_logs table) -->
+        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 class="font-bold text-sm text-cyan-400 flex items-center gap-2">
+              <span>🌙</span> Ночной дайджест (night_logs)
+            </h3>
+            <span id="badgeNightCount" class="text-xs font-semibold text-slate-400">0</span>
+          </div>
+          <p class="text-xs text-slate-400">Сообщения, полученные в режиме сна (/sleep). Команда /goodmorning отправляет их вам и очищает список.</p>
+
+          <div id="nightLogsContainer" class="space-y-2 max-h-72 overflow-y-auto custom-scrollbar">
+            <!-- Rendered from real DB -->
+          </div>
+        </div>
+
+        <!-- 5. System Status -->
+        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-3 text-xs">
+          <h3 class="font-bold text-sm text-white flex items-center gap-2 border-b border-slate-800 pb-2">
+            <span>⚙️</span> Системные параметры
+          </h3>
+          <div class="space-y-2 text-slate-300">
+            <div class="flex justify-between py-1 border-b border-slate-800/60">
+              <span class="text-slate-400">Основная модель ИИ:</span>
+              <span class="font-mono text-purple-400">gemini-3.5-flash-lite</span>
+            </div>
+            <div class="flex justify-between py-1 border-b border-slate-800/60">
+              <span class="text-slate-400">Резервная модель:</span>
+              <span class="font-mono text-indigo-400">gemini-3.1-flash-lite</span>
+            </div>
+            <div class="flex justify-between py-1 border-b border-slate-800/60">
+              <span class="text-slate-400">Часовой пояс:</span>
+              <span id="sysTzBadge" class="font-mono text-white">UTC+3 (MSK)</span>
+            </div>
+            <div class="flex justify-between py-1 border-b border-slate-800/60">
+              <span class="text-slate-400">Режим БД:</span>
+              <span class="font-mono text-emerald-400">SQLite WAL (5s timeout)</span>
+            </div>
+            <div class="flex justify-between py-1">
+              <span class="text-slate-400">Веб-сервер:</span>
+              <span class="font-mono text-cyan-400">aiohttp.web (Port 8080)</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- Real-Time Client Script -->
+  <script>
+    // State
+    let liveState = {
+      status: 'default',
+      stats: { total: 0, categories: {} },
+      reminders: [],
+      notes: [],
+      notes_categories: {},
+      night_logs: [],
+      timezone_offset: 3,
+      currentCatFilter: 'all'
+    };
+
+    // Determine initial API URL
+    function getInitialApiUrl() {
+      if (window.location.protocol.startsWith('http')) {
+        return window.location.origin;
+      }
+      return localStorage.getItem('assistant_api_url') || 'http://localhost:8080';
+    }
+
+    let apiUrl = getInitialApiUrl();
+    document.getElementById('serverUrlInput').value = apiUrl;
+
+    function updateServerUrl() {
+      apiUrl = document.getElementById('serverUrlInput').value.trim();
+      localStorage.setItem('assistant_api_url', apiUrl);
+      fetchLiveData();
+    }
+
+    function setRenderUrl() {
+      apiUrl = 'https://tg-ai-assistant-bot.onrender.com';
+      document.getElementById('serverUrlInput').value = apiUrl;
+      localStorage.setItem('assistant_api_url', apiUrl);
+      fetchLiveData();
+    }
+
+    // Live Fetch Routine
+    let isFetching = false;
+    async function fetchLiveData() {
+      if (isFetching) return;
+      isFetching = true;
+
+      try {
+        const cleanUrl = apiUrl.replace(/\/+$/, '');
+        const res = await fetch(`${cleanUrl}/api/data`, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (data.ok) {
+          liveState.status = data.status || 'default';
+          liveState.stats = data.stats || { total: 0, categories: {} };
+          liveState.reminders = data.reminders || [];
+          liveState.notes = data.notes || [];
+          liveState.notes_categories = data.notes_categories || {};
+          liveState.night_logs = data.night_logs || [];
+          liveState.timezone_offset = data.timezone_offset || 3;
+
+          renderAll();
+          setConnectionStatus(true);
+        } else {
+          throw new Error(data.error || 'Server reported false');
+        }
+      } catch (err) {
+        setConnectionStatus(false, err.message);
+      } finally {
+        isFetching = false;
+      }
+    }
+
+    function setConnectionStatus(connected, errDetail = '') {
+      const badge = document.getElementById('connectionStatusBadge');
+      const dot = document.getElementById('syncDot');
+      const pulse = document.getElementById('syncPulse');
+      const timeEl = document.getElementById('lastSyncTime');
+
+      if (connected) {
+        const now = new Date();
+        const timeStr = String(now.getHours()).padStart(2, '0') + ':' + 
+                        String(now.getMinutes()).padStart(2, '0') + ':' + 
+                        String(now.getSeconds()).padStart(2, '0');
+        timeEl.innerText = timeStr;
+        badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300';
+        dot.className = 'relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border-2 border-[#0d121f]';
+        pulse.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75';
+      } else {
+        timeEl.innerText = 'Офлайн';
+        badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300';
+        dot.className = 'relative inline-flex rounded-full h-3.5 w-3.5 bg-rose-500 border-2 border-[#0d121f]';
+        pulse.className = 'hidden';
+      }
+    }
+
+    // Render Everything
+    function renderAll() {
+      renderMode();
+      renderMetrics();
+      renderReminders();
+      renderNotes();
+      renderCategoryStats();
+      renderNightLogs();
+    }
+
+    // Mode Rendering
+    function renderMode() {
+      const mode = liveState.status.toLowerCase();
+      const badge = document.getElementById('activeModeBadge');
+      
+      const config = {
+        default: { color: 'emerald', text: '🟢 DEFAULT (Обычный)' },
+        sleep: { color: 'indigo', text: '🌙 SLEEP (Сплю)' },
+        busy: { color: 'amber', text: '🎮 BUSY (Занят)' },
+        ignore: { color: 'rose', text: '🔴 IGNORE (Игнор)' }
+      }[mode] || { color: 'emerald', text: mode.toUpperCase() };
+
+      badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-${config.color}-500"></span> ${config.text}`;
+      badge.className = `px-3 py-1 rounded-xl text-xs font-bold bg-${config.color}-500/10 text-${config.color}-400 border border-${config.color}-500/30 flex items-center gap-1.5`;
+
+      // Highlight active button
+      ['default', 'sleep', 'busy', 'ignore'].forEach(m => {
+        const btn = document.getElementById(`btn-mode-${m}`);
+        if (!btn) return;
+        if (m === mode) {
+          btn.className = `px-3 py-1.5 rounded-xl text-xs font-bold transition bg-indigo-600 text-white shadow-md ring-2 ring-indigo-400`;
+        } else {
+          btn.className = `px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-900 text-slate-400 hover:text-white border border-slate-800`;
+        }
+      });
+    }
+
+    // Change Bot Mode Live
+    async function changeBotMode(newMode) {
+      try {
+        const cleanUrl = apiUrl.replace(/\/+$/, '');
+        const res = await fetch(`${cleanUrl}/api/mode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: newMode })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          liveState.status = newMode;
+          renderMode();
+        }
+      } catch (e) {
+        console.error('Mode change error:', e);
+      }
+    }
+
+    // Metrics Rendering
+    function renderMetrics() {
+      document.getElementById('metricTotalMsgs').innerText = liveState.stats.total || 0;
+      document.getElementById('metricRemindersCount').innerText = liveState.reminders.length || 0;
+      document.getElementById('metricNotesCount').innerText = liveState.notes.length || 0;
+      document.getElementById('metricNightLogsCount').innerText = liveState.night_logs.length || 0;
+
+      document.getElementById('badgeRemCount').innerText = liveState.reminders.length || 0;
+      document.getElementById('badgeNotesCount').innerText = liveState.notes.length || 0;
+      document.getElementById('badgeNightCount').innerText = `${liveState.night_logs.length} в логе`;
+
+      const tzSign = liveState.timezone_offset >= 0 ? '+' : '';
+      document.getElementById('sysTzBadge').innerText = `UTC${tzSign}${liveState.timezone_offset}`;
+    }
+
+    // Reminders Rendering (Real rows or Empty State)
+    function renderReminders() {
+      const container = document.getElementById('remindersContainer');
+      const items = liveState.reminders;
+
+      if (!items || items.length === 0) {
+        container.innerHTML = `
+          <div class="p-8 text-center rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
+            <span class="text-3xl block">📭</span>
+            <p class="text-sm font-semibold text-slate-300">Нет активных напоминаний в базе данных</p>
+            <p class="text-xs text-slate-500 max-w-sm mx-auto">
+              Отправьте боту в Telegram сообщение с датой или временем, например:
+              <br><code class="text-indigo-400 font-mono mt-1 inline-block">«завтра в 14:00 скинуть отчет»</code>
+            </p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = items.map((r, idx) => {
+        const timeDisplay = r.remind_at_local ? r.remind_at_local.slice(0, 16) : 'Не указано';
+        const sourceHtml = r.source_info ? `<span class="text-[10px] text-slate-500 block truncate">📌 ${escapeHtml(r.source_info)}</span>` : '';
+
+        return `
+          <div class="p-4 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-indigo-500/40 transition flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 group">
+            <div class="space-y-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                  📅 ${escapeHtml(timeDisplay)}
+                </span>
+                <span class="text-[10px] text-slate-500 font-mono">ID #${r.id}</span>
+              </div>
+              <p class="font-bold text-sm text-white group-hover:text-indigo-300 transition">${escapeHtml(r.text)}</p>
+              ${sourceHtml}
+            </div>
+
+            <div class="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+              <button onclick="handleReminderAction('complete', ${r.id})" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 text-xs font-semibold transition" title="Отметить выполненным">
+                ✓ Выполнено
+              </button>
+              <button onclick="handleReminderAction('snooze', ${r.id}, 15)" class="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 text-xs font-semibold transition" title="Отложить на 15 мин">
+                +15м
+              </button>
+              <button onclick="handleReminderAction('delete', ${r.id})" class="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-semibold transition" title="Удалить из БД">
+                🗑
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function handleReminderAction(action, remId, minutes = 15) {
+      try {
+        const cleanUrl = apiUrl.replace(/\/+$/, '');
+        await fetch(`${cleanUrl}/api/reminders/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, id: remId, minutes })
+        });
+        await fetchLiveData();
+      } catch (e) {
+        console.error('Reminder action error:', e);
+      }
+    }
+
+    // Notes Rendering (Real notes or Empty State)
+    const catIcons = {
+      'Учеба': '🎓',
+      'Покупки': '🛒',
+      'Софт/VPN': '💻',
+      'Идеи': '💡',
+      'Другое': '📌'
+    };
+
+    function renderNotes() {
+      const container = document.getElementById('notesContainer');
+      const allNotes = liveState.notes;
+
+      // Update Category Counts
+      document.getElementById('count-cat-all').innerText = allNotes.length;
+      ['Учеба', 'Покупки', 'Софт/VPN', 'Идеи', 'Другое'].forEach(c => {
+        const count = liveState.notes_categories[c] || 0;
+        const el = document.getElementById(`count-cat-${c}`);
+        if (el) el.innerText = count;
+      });
+
+      // Filter
+      const filtered = liveState.currentCatFilter === 'all' 
+        ? allNotes 
+        : allNotes.filter(n => (n.category || '').toLowerCase() === liveState.currentCatFilter.toLowerCase());
+
+      if (!filtered || filtered.length === 0) {
+        container.innerHTML = `
+          <div class="col-span-full p-8 text-center rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
+            <span class="text-3xl block">📝</span>
+            <p class="text-sm font-semibold text-slate-300">Заметок в этой категории пока нет</p>
+            <p class="text-xs text-slate-500">Нажмите «+ Новая заметка» выше или отправьте сообщение боту в Telegram</p>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = filtered.map(n => {
+        const cat = n.category || 'Другое';
+        const icon = catIcons[cat] || '📌';
+        const dateStr = n.created_at ? n.created_at.slice(0, 16) : '';
+
+        return `
+          <div class="p-4 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-purple-500/40 transition flex flex-col justify-between gap-3 group">
+            <div class="space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                  ${icon} ${escapeHtml(cat)}
+                </span>
+                <span class="text-[10px] text-slate-500 font-mono">${escapeHtml(dateStr)}</span>
+              </div>
+              <p class="text-xs text-slate-200 leading-relaxed font-medium">${escapeHtml(n.content)}</p>
+            </div>
+            <div class="flex justify-between items-center pt-2 border-t border-slate-800/80 text-[11px]">
+              <span class="text-slate-600 font-mono">ID #${n.id}</span>
+              <button onclick="deleteNoteAction(${n.id})" class="text-rose-400 hover:text-rose-300 transition flex items-center gap-1 font-semibold">
+                <span>Удалить</span> 🗑
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function filterNotes(category) {
+      liveState.currentCatFilter = category;
+      document.querySelectorAll('.cat-chip').forEach(btn => {
+        if (btn.dataset.cat === category) {
+          btn.className = 'cat-chip px-2.5 py-1 rounded-lg bg-purple-600 text-white font-medium';
+        } else {
+          btn.className = 'cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium';
+        }
+      });
+      renderNotes();
+    }
+
+    function toggleAddNoteForm() {
+      const el = document.getElementById('addNoteForm');
+      el.classList.toggle('hidden');
+    }
+
+    async function submitNewNote() {
+      const cat = document.getElementById('newNoteCategory').value;
+      const content = document.getElementById('newNoteContent').value.trim();
+      if (!content) return;
+
+      try {
+        const cleanUrl = apiUrl.replace(/\/+$/, '');
+        await fetch(`${cleanUrl}/api/notes/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'create', category: cat, content })
+        });
+        document.getElementById('newNoteContent').value = '';
+        toggleAddNoteForm();
+        await fetchLiveData();
+      } catch (e) {
+        console.error('Note add error:', e);
+      }
+    }
+
+    async function deleteNoteAction(noteId) {
+      try {
+        const cleanUrl = apiUrl.replace(/\/+$/, '');
+        await fetch(`${cleanUrl}/api/notes/action`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'delete', id: noteId })
+        });
+        await fetchLiveData();
+      } catch (e) {
+        console.error('Note delete error:', e);
+      }
+    }
+
+    // Category Stats Breakdown (Real from stats_log)
+    function renderCategoryStats() {
+      const container = document.getElementById('categoryStatsBars');
+      const cats = liveState.stats.categories || {};
+      const total = liveState.stats.total || 0;
+
+      const labels = [
+        { key: 'personal', title: '👥 Личные', color: 'indigo' },
+        { key: 'formal', title: '💬 Обычные', color: 'blue' },
+        { key: 'tech_vpn', title: '💻 Софт / VPN', color: 'purple' },
+        { key: 'urgent', title: '🚨 Срочные', color: 'rose' }
+      ];
+
+      if (total === 0) {
+        container.innerHTML = `
+          <div class="py-4 text-center text-xs text-slate-500">
+            Сообщений в stats_log пока нет.
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = labels.map(l => {
+        const count = cats[l.key] || 0;
+        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+
+        return `
+          <div class="space-y-1">
+            <div class="flex justify-between text-xs">
+              <span class="text-slate-300 font-medium">${l.title}</span>
+              <span class="text-slate-400 font-mono">${count} (${pct}%)</span>
+            </div>
+            <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
+              <div class="bg-${l.color}-500 h-2 rounded-full transition-all duration-500" style="width: ${pct}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Night Logs Rendering
+    function renderNightLogs() {
+      const container = document.getElementById('nightLogsContainer');
+      const logs = liveState.night_logs || [];
+
+      if (logs.length === 0) {
+        container.innerHTML = `
+          <div class="py-6 text-center text-xs text-slate-500">
+            Ночью сообщений не поступало.
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = logs.map(l => `
+        <div class="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs space-y-1">
+          <div class="flex justify-between items-center">
+            <b class="text-cyan-300">${escapeHtml(l.sender_name || 'Неизвестный')}</b>
+            <span class="text-[10px] text-slate-500 font-mono">${escapeHtml(l.timestamp ? l.timestamp.slice(11, 16) : '')}</span>
+          </div>
+          <p class="text-slate-300">${escapeHtml(l.message_text)}</p>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.innerText = String(text);
+      return div.innerHTML;
+    }
+
+    // Initial Fetch & Real-time interval (every 3 seconds)
+    fetchLiveData();
+    setInterval(fetchLiveData, 3000);
+  </script>
+</body>
+</html>

@@ -59,13 +59,125 @@ def get_cat_icon(cat: str) -> str:
 # ВЕБ-СЕРВЕР (Для Render, UptimeRobot, 24/7 работы)
 # ==============================================================================
 
+def make_cors_response(data=None, text=None, content_type="application/json", status=200):
+    if text is not None:
+        body = text
+    else:
+        import json
+        body = json.dumps(data, ensure_ascii=False)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
+    return web.Response(text=body, content_type=content_type, headers=headers, status=status)
+
+async def handle_options(request):
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
+    return web.Response(headers=headers, status=204)
+
 async def handle_ping(request):
-    return web.Response(text="Bot is running 24/7!", status=200)
+    return make_cors_response(text="Bot is running 24/7!", content_type="text/plain")
+
+async def handle_get_data(request):
+    try:
+        status = db.get_status()
+        stats = db.get_stats_summary()
+        reminders = db.get_all_pending_reminders()
+        notes = db.get_all_notes(limit=100)
+        night_logs = db.get_recent_night_logs(limit=20)
+        counts = db.get_notes_categories_stats(MY_ID)
+        tz_offset = db.get_user_tz_offset(MY_ID)
+
+        data = {
+            "ok": True,
+            "status": status,
+            "model": "gemini-3.5-flash-lite",
+            "fallback_model": "gemini-3.1-flash-lite",
+            "timezone_offset": tz_offset,
+            "stats": stats,
+            "reminders": reminders,
+            "notes": notes,
+            "notes_categories": counts,
+            "night_logs": night_logs,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        return make_cors_response(data=data)
+    except Exception as e:
+        logging.error(f"API get_data error: {e}")
+        return make_cors_response(data={"ok": False, "error": str(e)}, status=500)
+
+async def handle_reminders_action(request):
+    try:
+        body = await request.json()
+        action = body.get("action")
+        rem_id = int(body.get("id", 0))
+        if action == "complete":
+            db.mark_reminder_completed(rem_id)
+        elif action == "delete":
+            db.delete_reminder(rem_id)
+        elif action == "snooze":
+            minutes = int(body.get("minutes", 15))
+            db.snooze_reminder(rem_id, MY_ID, minutes)
+        return make_cors_response(data={"ok": True})
+    except Exception as e:
+        return make_cors_response(data={"ok": False, "error": str(e)}, status=400)
+
+async def handle_notes_action(request):
+    try:
+        body = await request.json()
+        action = body.get("action")
+        if action == "delete":
+            note_id = int(body.get("id", 0))
+            db.delete_note(note_id, MY_ID)
+        elif action == "create":
+            cat = body.get("category", "Другое")
+            content = body.get("content", "").strip()
+            if content:
+                db.add_note(MY_ID, cat, content)
+        return make_cors_response(data={"ok": True})
+    except Exception as e:
+        return make_cors_response(data={"ok": False, "error": str(e)}, status=400)
+
+async def handle_mode_action(request):
+    try:
+        body = await request.json()
+        mode = body.get("mode", "default")
+        if mode in ["default", "sleep", "busy", "ignore"]:
+            db.set_status(mode)
+            return make_cors_response(data={"ok": True, "status": mode})
+        return make_cors_response(data={"ok": False, "error": "Invalid mode"}, status=400)
+    except Exception as e:
+        return make_cors_response(data={"ok": False, "error": str(e)}, status=400)
+
+async def handle_dashboard(request):
+    html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    if os.path.exists(html_path):
+        with open(html_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return make_cors_response(text=content, content_type="text/html")
+    return make_cors_response(text="Dashboard not found", status=404)
 
 async def start_web_server():
     app = web.Application()
-    app.router.add_get("/", handle_ping)
+    # CORS preflights
+    app.router.add_route("OPTIONS", "/{tail:.*}", handle_options)
+    
+    # Public & Dashboard endpoints
+    app.router.add_get("/", handle_dashboard)
+    app.router.add_get("/dashboard", handle_dashboard)
     app.router.add_get("/health", handle_ping)
+    app.router.add_get("/ping", handle_ping)
+
+    # Real-Time Data API
+    app.router.add_get("/api/data", handle_get_data)
+    app.router.add_post("/api/reminders/action", handle_reminders_action)
+    app.router.add_post("/api/notes/action", handle_notes_action)
+    app.router.add_post("/api/mode", handle_mode_action)
     
     runner = web.AppRunner(app)
     await runner.setup()
@@ -73,7 +185,7 @@ async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info(f"🌐 Веб-сервер успешно запущен на порту {port}")
+    logging.info(f"🌐 Веб-сервер и Real-Time API успешно запущены на порту {port}")
 
 # ==============================================================================
 # ФОНОВЫЙ ВОРКЕР НАПОМИНАНИЙ (Модуль 3)

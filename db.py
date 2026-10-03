@@ -439,6 +439,69 @@ def clear_notes_by_cat(user_id: int, category: str):
     with get_cursor(commit=True) as cursor:
         cursor.execute("UPDATE notes SET is_archived = 1 WHERE user_id = ? AND category = ?", (user_id, category))
 
+def get_all_pending_reminders():
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, user_id, chat_id, text, remind_at_local, remind_at_utc, created_at, source_info
+            FROM reminders
+            WHERE status = 'pending'
+            ORDER BY remind_at_utc ASC
+        """)
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "user_id": r[1],
+                "chat_id": r[2],
+                "text": r[3],
+                "remind_at_local": r[4],
+                "remind_at_utc": r[5],
+                "created_at": r[6],
+                "source_info": r[7]
+            }
+            for r in rows
+        ]
+
+def get_all_notes(limit: int = 100):
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, user_id, category, content, created_at
+            FROM notes
+            WHERE is_archived = 0
+            ORDER BY id DESC
+            LIMIT ?
+        """, (limit,))
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "user_id": r[1],
+                "category": r[2],
+                "content": r[3],
+                "created_at": r[4]
+            }
+            for r in rows
+        ]
+
+def get_recent_night_logs(limit: int = 20):
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, sender_name, message_text, timestamp
+            FROM night_logs
+            ORDER BY id DESC
+            LIMIT ?
+        """, (limit,))
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "sender_name": r[1],
+                "message_text": r[2],
+                "timestamp": r[3]
+            }
+            for r in rows
+        ]
+
 # --- Псевдонимы функций (для полной обратной совместимости) ---
 get_user_timezone = get_user_tz_offset
 set_user_timezone = set_user_tz_offset
