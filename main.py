@@ -217,7 +217,7 @@ async def handle_business_message(message: types.Message):
             clean_text = text[1:].strip()
             if clean_text:
                 try:
-                    cute_text = make_cute_text(clean_text)
+                    cute_text = await make_cute_text(clean_text)
                     if cute_text:
                         await bot.edit_message_text(
                             text=cute_text,
@@ -310,7 +310,7 @@ async def handle_business_message(message: types.Message):
     user_profile = db.get_user_profile(sender_id)
     is_aggr = db.is_aggressive(sender_id)
 
-    analysis = analyze_message(text, photo_path, voice_path, user_profile, is_aggressive=is_aggr)
+    analysis = await analyze_message(text, photo_path, voice_path, user_profile, is_aggressive=is_aggr)
 
     if photo_path and os.path.exists(photo_path):
         os.remove(photo_path)
