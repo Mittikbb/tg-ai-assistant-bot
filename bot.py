@@ -35,7 +35,7 @@ logging.basicConfig(
 # --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 ADMIN_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 PORT = int(os.getenv("PORT", 8080))
@@ -375,11 +375,20 @@ init_db()
 # ИИ-СЕССИИ И СТРУКТУРИРОВАННЫЙ ПАРСИНГ (Gemini + Fallback)
 # ==============================================================================
 
+SUPPORTED_MODELS = [
+    os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite"
+]
+MODELS_TO_TRY = list(dict.fromkeys(SUPPORTED_MODELS))
+
 user_sessions = {}
 
-def get_user_chat(user_id: int):
+def get_user_chat(user_id: int, model_name: str = None):
+    if not model_name:
+        model_name = MODELS_TO_TRY[0]
     if user_id not in user_sessions and ai_client:
-        user_sessions[user_id] = ai_client.aio.chats.create(model=GEMINI_MODEL)
+        user_sessions[user_id] = ai_client.aio.chats.create(model=model_name)
     return user_sessions.get(user_id)
 
 class ParsedIntent(BaseModel):
@@ -447,20 +456,21 @@ def parse_fallback(text: str, now: datetime) -> dict:
     clean_text = text.strip()
     lower = clean_text.lower()
     
-    # 1. Относительное время: "через N (мин/часов/дней)"
-    rel_match = re.search(r'(?:напомни\s+)?через\s+(\d+)\s*(м|мин|минут|минуты|минуту|ч|час|часа|часов|д|дн|дня|дней)\s*(.*)', lower)
+    # 1. Относительное время: "через N (минут/часов/дней)"
+    rel_pattern = r'^(?:напомни\s+)?через\s+(\d+)\s*(минуты|минуту|минут|минута|мин|м|часов|часа|час|ч|дней|дня|день|дн|д)\s*(.*)$'
+    rel_match = re.match(rel_pattern, clean_text, flags=re.IGNORECASE)
     if rel_match:
         val = int(rel_match.group(1))
-        unit = rel_match.group(2)
-        title = re.sub(r'^(?:напомни\s+)?через\s+\d+\s*(?:м|мин|минут|минуты|минуту|ч|час|часа|часов|д|дн|дня|дней)\s*', '', clean_text, flags=re.IGNORECASE).strip()
+        unit = rel_match.group(2).lower()
+        title = rel_match.group(3).strip()
         if not title:
             title = "Напоминание"
             
-        if 'мин' in unit or unit == 'м':
+        if any(unit.startswith(u) for u in ['мин', 'м']):
             target_dt = now + timedelta(minutes=val)
-        elif 'час' in unit or unit == 'ч':
+        elif any(unit.startswith(u) for u in ['час', 'ч']):
             target_dt = now + timedelta(hours=val)
-        elif 'дн' in unit or unit == 'д' or 'дня' in unit:
+        elif any(unit.startswith(u) for u in ['дн', 'д', 'ден']):
             target_dt = now + timedelta(days=val)
         else:
             target_dt = now + timedelta(minutes=val)
@@ -473,11 +483,12 @@ def parse_fallback(text: str, now: datetime) -> dict:
         }
 
     # 2. "завтра в HH:MM"
-    tomorrow_match = re.search(r'(?:напомни\s+)?завтра\s+в\s+(\d{1,2})[:.](\d{2})\s*(.*)', lower)
+    tomorrow_pattern = r'^(?:напомни\s+)?завтра\s+в\s+(\d{1,2})[:.](\d{2})\s*(.*)$'
+    tomorrow_match = re.match(tomorrow_pattern, clean_text, flags=re.IGNORECASE)
     if tomorrow_match:
         hour = int(tomorrow_match.group(1))
         minute = int(tomorrow_match.group(2))
-        title = re.sub(r'^(?:напомни\s+)?завтра\s+в\s+\d{1,2}[:.]\d{2}\s*', '', clean_text, flags=re.IGNORECASE).strip()
+        title = tomorrow_match.group(3).strip()
         if not title:
             title = "Напоминание"
         target_dt = (now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -489,12 +500,13 @@ def parse_fallback(text: str, now: datetime) -> dict:
         }
 
     # 3. "сегодня в HH:MM" или "в HH:MM"
-    today_match = re.search(r'(?:(?:напомни\s+)?сегодня\s+в\s+|(?:напомни\s+)?в\s+)(\d{1,2})[:.](\d{2})\s*(.*)', lower)
+    today_pattern = r'^(?:(?:напомни\s+)?сегодня\s+в\s+|(?:напомни\s+)?в\s+)(\d{1,2})[:.](\d{2})\s*(.*)$'
+    today_match = re.match(today_pattern, clean_text, flags=re.IGNORECASE)
     if today_match:
         hour = int(today_match.group(1))
         minute = int(today_match.group(2))
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            title = re.sub(r'^(?:напомни\s+)?(?:сегодня\s+)?в\s+\d{1,2}[:.]\d{2}\s*', '', clean_text, flags=re.IGNORECASE).strip()
+            title = today_match.group(3).strip()
             if not title:
                 title = "Напоминание"
             target_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -514,10 +526,10 @@ def parse_fallback(text: str, now: datetime) -> dict:
         "пятницу": 4, "пятница": 4, "пт": 4, "субботу": 5, "суббота": 5, "сб": 5,
         "воскресенье": 6, "вс": 6
     }
-    weekday_pattern = r'(?:напомни\s+)?(?:в\s+|во\s+)?(' + '|'.join(weekdays.keys()) + r')\s+в\s+(\d{1,2})[:.](\d{2})\s*(.*)'
-    weekday_match = re.search(weekday_pattern, lower)
+    weekday_pattern = r'^(?:напомни\s+)?(?:в\s+|во\s+)?(' + '|'.join(weekdays.keys()) + r')\s+в\s+(\d{1,2})[:.](\d{2})\s*(.*)$'
+    weekday_match = re.match(weekday_pattern, clean_text, flags=re.IGNORECASE)
     if weekday_match:
-        day_name = weekday_match.group(1)
+        day_name = weekday_match.group(1).lower()
         hour = int(weekday_match.group(2))
         minute = int(weekday_match.group(3))
         target_day = weekdays[day_name]
@@ -528,7 +540,7 @@ def parse_fallback(text: str, now: datetime) -> dict:
             if candidate <= now:
                 days_ahead = 7
         target_dt = (now + timedelta(days=days_ahead)).replace(hour=hour, minute=minute, second=0, microsecond=0)
-        title = re.sub(r'^(?:напомни\s+)?(?:в\s+|во\s+)?\w+\s+в\s+\d{1,2}[:.]\d{2}\s*', '', clean_text, flags=re.IGNORECASE).strip()
+        title = weekday_match.group(4).strip()
         if not title:
             title = "Напоминание"
         return {
@@ -608,37 +620,34 @@ async def parse_user_intent(text: str, user_id: int, is_forwarded: bool = False,
     local_now = datetime.now(tz)
     
     if ai_client:
-        try:
-            sys_prompt = build_ai_system_prompt(local_now, offset)
-            input_text = text
-            if is_forwarded:
-                src_note = f" (переслано от {source_info})" if source_info else ""
-                input_text = f"[Пересланное сообщение{src_note}]:\n{text}"
-                
-            config = genai_types.GenerateContentConfig(
-                system_instruction=sys_prompt,
-                response_mime_type="application/json",
-                response_schema=ParsedIntent,
-                temperature=0.2
-            )
+        sys_prompt = build_ai_system_prompt(local_now, offset)
+        input_text = text
+        if is_forwarded:
+            src_note = f" (переслано от {source_info})" if source_info else ""
+            input_text = f"[Пересланное сообщение{src_note}]:\n{text}"
             
-            response = await ai_client.aio.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=input_text,
-                config=config
-            )
-            
-            parsed = ParsedIntent.model_validate_json(response.text)
-            
-            # Если пересланное сообщение было классифицировано как chat, делаем его заметкой
-            if is_forwarded and parsed.intent == "chat":
-                parsed.intent = "note"
-                parsed.category = parsed.category or "Другое"
-                parsed.title = parsed.title or text
-                
-            return parsed
-        except Exception as e:
-            logging.warning(f"Gemini API parse warning: {e}. Переключаемся на резервный парсер.")
+        config = genai_types.GenerateContentConfig(
+            system_instruction=sys_prompt,
+            response_mime_type="application/json",
+            response_schema=ParsedIntent,
+            temperature=0.2
+        )
+        
+        for model_name in MODELS_TO_TRY:
+            try:
+                response = await ai_client.aio.models.generate_content(
+                    model=model_name,
+                    contents=input_text,
+                    config=config
+                )
+                parsed = ParsedIntent.model_validate_json(response.text)
+                if is_forwarded and parsed.intent == "chat":
+                    parsed.intent = "note"
+                    parsed.category = parsed.category or "Другое"
+                    parsed.title = parsed.title or text
+                return parsed
+            except Exception as e:
+                logging.warning(f"Gemini API parse warning ({model_name}): {e}")
             
     # Резервный парсер
     fallback = parse_fallback(text, local_now)
@@ -1348,12 +1357,24 @@ async def process_incoming_text(message: Message, raw_text: str, is_forwarded: b
             await message.answer("⚠️ Ошибка: Gemini API не подключен или не задан GEMINI_API_KEY.")
             return
 
-        try:
-            response = await user_chat.send_message(raw_text)
-            await safe_reply_text(message, response.text)
-        except Exception as e:
-            logging.error(f"Ошибка Gemini Chat: {e}")
-            await message.answer(f"⚠️ Ошибка при запросе к ИИ: {e}")
+        chat_sent = False
+        last_error = None
+        for model_name in MODELS_TO_TRY:
+            try:
+                if user_id not in user_sessions:
+                    user_sessions[user_id] = ai_client.aio.chats.create(model=model_name)
+                user_chat = user_sessions[user_id]
+                response = await user_chat.send_message(raw_text)
+                await safe_reply_text(message, response.text)
+                chat_sent = True
+                break
+            except Exception as e:
+                last_error = e
+                logging.warning(f"Ошибка Gemini Chat с моделью {model_name}: {e}")
+                user_sessions.pop(user_id, None)
+
+        if not chat_sent:
+            await message.answer(f"⚠️ Ошибка при запросе к ИИ: {last_error}")
 
 @dp.message(F.text | F.caption)
 async def handle_message(message: Message):
