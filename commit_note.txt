@@ -1,0 +1,24 @@
+The requested `get_status` function optimization:
+"def get_status() -> str:
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'status'")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else "default"
+"
+
+is actually NOT present in the codebase.
+The codebase has `get_status` like this:
+def get_status() -> str:
+    global _status_cache
+    if _status_cache is not None:
+        return _status_cache
+
+    with get_cursor() as cursor:
+        cursor.execute("SELECT value FROM settings WHERE key = 'status'")
+        row = cursor.fetchone()
+    _status_cache = row[0] if row else "default"
+    return _status_cache
+
+However, `get_status` DOES use `get_cursor` which internally calls `conn = sqlite3.connect(DB_NAME)` in the original version, making `get_cursor` the source of truth for the connection creation per query! So by fixing `get_cursor` we fixed `get_status` and all other queries as well.
