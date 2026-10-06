@@ -5,18 +5,26 @@ from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+_db_conn = None
+
+def _get_connection():
+    global _db_conn
+    if _db_conn is None:
+        _db_conn = sqlite3.connect(DB_NAME, timeout=15.0, check_same_thread=False)
+        _db_conn.execute("PRAGMA journal_mode=WAL;")
+        _db_conn.execute("PRAGMA busy_timeout=5000;")
+    return _db_conn
+
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = _get_connection()
     cursor = conn.cursor()
     try:
         yield cursor
         if commit:
             conn.commit()
     finally:
-        conn.close()
+        cursor.close()
 
 def init_db():
     with get_cursor(commit=True) as cursor:
