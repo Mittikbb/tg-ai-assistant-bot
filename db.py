@@ -73,6 +73,22 @@ def init_db():
         """)
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('status', 'default')")
 
+        # Лента действий ассистента (выгружается в веб-панель)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ai_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                chat_id INTEGER,
+                sender_id INTEGER,
+                sender_name TEXT,
+                incoming TEXT,
+                reply TEXT,
+                category TEXT,
+                summary TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+
         # --- Таблицы Модуля 3 (Напоминания и Заметки) ---
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_settings (
@@ -205,6 +221,53 @@ def log_stat(user_id: int, category: str):
     with get_cursor(commit=True) as cursor:
         cursor.execute("INSERT INTO stats_log (user_id, category) VALUES (?, ?)", (user_id, category))
 
+ACTIVITY_KEEP = 500
+
+def log_activity(kind: str, chat_id: int = None, sender_id: int = None, sender_name: str = "",
+                 incoming: str = "", reply: str = "", category: str = "", summary: str = ""):
+    """kind: reply | personal | status | tone | screenshot"""
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO ai_activity (kind, chat_id, sender_id, sender_name, incoming, reply, category, summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (kind, chat_id, sender_id, sender_name, incoming, reply, category, summary, created_at))
+        cursor.execute(
+            "DELETE FROM ai_activity WHERE id <= (SELECT MAX(id) FROM ai_activity) - ?",
+            (ACTIVITY_KEEP,)
+        )
+
+def get_recent_activity(limit: int = 60):
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, kind, chat_id, sender_id, sender_name, incoming, reply, category, summary, created_at
+            FROM ai_activity
+            ORDER BY id DESC
+            LIMIT ?
+        """, (limit,))
+        cols = ["id", "kind", "chat_id", "sender_id", "sender_name", "incoming", "reply", "category", "summary", "created_at"]
+        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+
+def get_activity_today_counts() -> dict:
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    with get_cursor() as cursor:
+        cursor.execute("SELECT kind, COUNT(*) FROM ai_activity WHERE created_at >= ? GROUP BY kind", (since,))
+        return dict(cursor.fetchall())
+
+def clear_activity():
+    with get_cursor(commit=True) as cursor:
+        cursor.execute("DELETE FROM ai_activity")
+
+def get_setting(key: str) -> Optional[str]:
+    with get_cursor() as cursor:
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+    return row[0] if row else None
+
+def set_setting(key: str, value: str):
+    with get_cursor(commit=True) as cursor:
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+
 def get_stats_summary() -> dict:
     with get_cursor() as cursor:
         cursor.execute("SELECT COUNT(*) FROM stats_log")
@@ -295,9 +358,12 @@ def delete_reminder(rem_id: int, user_id: Optional[int] = None):
         else:
             cursor.execute("UPDATE reminders SET status = 'deleted' WHERE id = ?", (rem_id,))
 
-def snooze_reminder_by_id(rem_id: int, minutes: int, tz_offset: int):
+def snooze_reminder_by_id(rem_id: int, minutes: int, tz_offset: int, user_id: Optional[int] = None):
     rem = get_reminder_by_id(rem_id)
-    if not rem:
+    # Переносить можно только своё и только ещё живое (ожидающее или уже сработавшее) напоминание
+    if not rem or rem["status"] not in ("pending", "sent"):
+        return None, None
+    if user_id and rem["user_id"] != user_id:
         return None, None
     now_utc = datetime.now(timezone.utc)
     new_utc = now_utc + timedelta(minutes=minutes)
@@ -317,7 +383,7 @@ def snooze_reminder_by_id(rem_id: int, minutes: int, tz_offset: int):
 
 def snooze_reminder(rem_id: int, user_id: int, minutes: int = 15):
     tz = get_user_tz_offset(user_id)
-    new_local, _ = snooze_reminder_by_id(rem_id, minutes, tz)
+    new_local, _ = snooze_reminder_by_id(rem_id, minutes, tz, user_id)
     return new_local
 
 def get_due_reminders(current_utc_str: Optional[str] = None):

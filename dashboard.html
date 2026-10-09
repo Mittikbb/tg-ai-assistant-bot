@@ -1,741 +1,773 @@
 <!DOCTYPE html>
-<html lang="ru" class="dark">
+<html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Telegram AI Assistant • Live Control Center</title>
-  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
-  <style>
-    body {
-      background-color: #080b12;
-      color: #f1f5f9;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
+<title>ИИ-Ассистент · Панель</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+<style>
+  :root {
+    --bg: #07090f;
+    --bg-2: #0b0f19;
+    --card: rgba(17, 22, 36, 0.72);
+    --card-solid: #111624;
+    --line: rgba(255, 255, 255, 0.07);
+    --line-2: rgba(255, 255, 255, 0.12);
+    --text: #eef1f8;
+    --muted: #8b93a7;
+    --dim: #5b6377;
+    --accent: #7c6cff;
+    --accent-2: #4fd1ff;
+    --accent-soft: rgba(124, 108, 255, 0.14);
+    --ok: #3ddc97;
+    --warn: #ffb547;
+    --bad: #ff5f7e;
+    --info: #4fd1ff;
+    --pink: #ff7ad9;
+    --radius: 18px;
+    --shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f5fb; --bg-2: #eceef7; --card: rgba(255,255,255,0.86); --card-solid: #ffffff;
+      --line: rgba(15, 20, 40, 0.08); --line-2: rgba(15, 20, 40, 0.14);
+      --text: #161a26; --muted: #5c6478; --dim: #8a91a3;
+      --accent-soft: rgba(124, 108, 255, 0.12);
+      --shadow: 0 20px 40px -24px rgba(30, 40, 80, 0.25);
+      color-scheme: light;
     }
-    .custom-scrollbar::-webkit-scrollbar {
-      width: 6px;
-      height: 6px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-track {
-      background: rgba(15, 23, 42, 0.6);
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb {
-      background: rgba(99, 102, 241, 0.3);
-      border-radius: 9999px;
-    }
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-      background: rgba(99, 102, 241, 0.5);
-    }
-    .card-dark {
-      background-color: #0d121f;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-    .card-dark:hover {
-      border-color: rgba(99, 102, 241, 0.25);
-    }
-  </style>
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f5fb; --bg-2: #eceef7; --card: rgba(255,255,255,0.86); --card-solid: #ffffff;
+    --line: rgba(15, 20, 40, 0.08); --line-2: rgba(15, 20, 40, 0.14);
+    --text: #161a26; --muted: #5c6478; --dim: #8a91a3;
+    --accent-soft: rgba(124, 108, 255, 0.12);
+    --shadow: 0 20px 40px -24px rgba(30, 40, 80, 0.25);
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(600px 400px at 0% 0%, rgba(124,108,255,0.16), transparent 70%),
+      radial-gradient(500px 400px at 100% 30%, rgba(79,209,255,0.10), transparent 70%),
+      radial-gradient(600px 400px at 40% 110%, rgba(255,122,217,0.08), transparent 70%);
+  }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  .hidden { display: none !important; }
+
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 48px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 16px 18px 12px;
+  }
+  .card-title { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; }
+  .card-title .ico {
+    width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--accent-soft); font-size: 15px;
+  }
+  .pill {
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .card-body { padding: 0 18px 18px; }
+
+  /* ---------- Шапка ---------- */
+  header.top {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    padding: 16px 18px;
+  }
+  .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .logo {
+    position: relative; width: 46px; height: 46px; border-radius: 14px; flex-shrink: 0;
+    display: grid; place-items: center; font-size: 22px;
+    background: linear-gradient(135deg, var(--accent), var(--pink));
+    box-shadow: 0 10px 30px -10px var(--accent);
+  }
+  .live-dot {
+    position: absolute; right: -3px; bottom: -3px; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--ok); border: 3px solid var(--card-solid);
+  }
+  .live-dot.off { background: var(--bad); }
+  .live-dot:not(.off)::after {
+    content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--ok);
+    animation: ping 1.8s ease-out infinite;
+  }
+  @keyframes ping { from { transform: scale(.6); opacity: .9; } to { transform: scale(1.8); opacity: 0; } }
+  .brand h1 { margin: 0; font-size: 18px; letter-spacing: -0.01em; }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+  .top-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 10px;
+    background: var(--bg-2); border: 1px solid var(--line); color: var(--muted); font-size: 12px; white-space: nowrap;
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--bg-2); display: grid; place-items: center; font-size: 15px; transition: .15s;
+  }
+  .icon-btn:hover { border-color: var(--line-2); transform: translateY(-1px); }
+
+  /* ---------- Режимы ---------- */
+  .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 0 18px 18px; }
+  .mode {
+    text-align: left; padding: 12px 14px; border-radius: 14px; background: var(--bg-2);
+    border: 1px solid var(--line); transition: .18s; position: relative; overflow: hidden;
+  }
+  .mode:hover { border-color: var(--line-2); transform: translateY(-1px); }
+  .mode .m-emoji { font-size: 20px; }
+  .mode .m-title { font-weight: 700; margin-top: 4px; }
+  .mode .m-desc { color: var(--muted); font-size: 12px; margin-top: 2px; line-height: 1.35; }
+  .mode.active { border-color: transparent; background: linear-gradient(var(--card-solid), var(--card-solid)) padding-box, linear-gradient(135deg, var(--accent), var(--accent-2)) border-box; border: 1px solid transparent; }
+  .mode.active::after {
+    content: "активен"; position: absolute; top: 10px; right: 12px; font-size: 10px; font-weight: 700;
+    color: var(--accent); text-transform: uppercase; letter-spacing: .06em;
+  }
+
+  /* ---------- KPI ---------- */
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 14px 0; }
+  .kpi { padding: 16px 18px; }
+  .kpi .k-label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .kpi .k-value { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi .k-sub { color: var(--dim); font-size: 11.5px; }
+  .kpi:nth-child(1) .k-value { color: var(--accent); }
+  .kpi:nth-child(2) .k-value { color: var(--info); }
+  .kpi:nth-child(3) .k-value { color: var(--ok); }
+  .kpi:nth-child(4) .k-value { color: var(--pink); }
+
+  /* ---------- Сетка ---------- */
+  .grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; }
+  .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  /* ---------- Табы / фильтры ---------- */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab {
+    padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: transparent; border: 1px solid var(--line); color: var(--muted); transition: .15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+
+  /* ---------- Лента ИИ ---------- */
+  .feed { display: flex; flex-direction: column; gap: 10px; max-height: 720px; overflow-y: auto; padding-right: 4px; }
+  .event {
+    padding: 14px; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line);
+    animation: rise .35s ease both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .ev-head { display: flex; align-items: center; gap: 10px; }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center;
+    font-weight: 800; font-size: 13px; color: #fff;
+  }
+  .ev-who { min-width: 0; flex: 1; }
+  .ev-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev-meta { color: var(--dim); font-size: 11.5px; }
+  .tag {
+    font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .tag.reply { background: rgba(124,108,255,.15); color: var(--accent); }
+  .tag.personal { background: rgba(255,122,217,.14); color: var(--pink); }
+  .tag.status { background: rgba(139,147,167,.15); color: var(--muted); }
+  .tag.tone { background: rgba(255,95,126,.14); color: var(--bad); }
+  .tag.screenshot { background: rgba(79,209,255,.14); color: var(--info); }
+  .bubble {
+    margin-top: 10px; padding: 9px 12px; border-radius: 4px 14px 14px 14px; max-width: 92%;
+    background: var(--card-solid); border: 1px solid var(--line); white-space: pre-wrap; word-wrap: break-word;
+  }
+  .bubble.ai {
+    margin-left: auto; border-radius: 14px 4px 14px 14px;
+    background: linear-gradient(135deg, rgba(124,108,255,.22), rgba(79,209,255,.14));
+    border-color: rgba(124,108,255,.25);
+  }
+  .bubble-label { font-size: 10.5px; color: var(--dim); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+  .summary { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; gap: 6px; }
+
+  /* ---------- Списки ---------- */
+  .list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
+  .row {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 11px 12px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line);
+  }
+  .row-main { min-width: 0; flex: 1; }
+  .row-title { font-weight: 600; word-wrap: break-word; }
+  .row-sub { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+  .time-badge {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
+    background: var(--accent-soft); color: var(--accent); margin-bottom: 3px; font-variant-numeric: tabular-nums;
+  }
+  .actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .act {
+    border: 1px solid var(--line); background: var(--card-solid); border-radius: 8px;
+    padding: 5px 8px; font-size: 12px; font-weight: 600; transition: .15s;
+  }
+  .act:hover { border-color: var(--line-2); }
+  .act.ok:hover { color: var(--ok); }
+  .act.warn:hover { color: var(--warn); }
+  .act.bad:hover { color: var(--bad); }
+
+  .empty { text-align: center; color: var(--dim); padding: 26px 10px; font-size: 13px; }
+  .empty .e-ico { font-size: 26px; display: block; margin-bottom: 6px; opacity: .8; }
+
+  /* ---------- Категории ---------- */
+  .bars { display: flex; flex-direction: column; gap: 10px; }
+  .bar-row { display: grid; grid-template-columns: 110px 1fr 30px; align-items: center; gap: 10px; font-size: 12.5px; }
+  .bar-track { height: 8px; border-radius: 999px; background: var(--bg-2); overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .6s ease; }
+  .bar-num { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  /* ---------- Заметки ---------- */
+  .notes-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .note-form { display: grid; grid-template-columns: 150px 1fr auto; gap: 8px; margin-bottom: 14px; }
+  .input {
+    width: 100%; padding: 9px 12px; border-radius: 10px; background: var(--bg-2);
+    border: 1px solid var(--line); outline: none; transition: .15s;
+  }
+  .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .btn {
+    padding: 9px 16px; border-radius: 10px; border: none; font-weight: 700; color: #fff;
+    background: linear-gradient(135deg, var(--accent), #9a7bff); transition: .15s; white-space: nowrap;
+  }
+  .btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+  .btn:disabled { opacity: .55; cursor: default; transform: none; }
+  .btn.ghost { background: var(--bg-2); border: 1px solid var(--line); color: var(--text); }
+  .notes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+  .note {
+    padding: 12px 14px; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line);
+    display: flex; flex-direction: column; gap: 8px; animation: rise .3s ease both;
+  }
+  .note-top { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; color: var(--dim); }
+  .note-cat { font-weight: 700; color: var(--muted); }
+  .note-text { white-space: pre-wrap; word-wrap: break-word; flex: 1; }
+  .note .act { align-self: flex-end; }
+
+  /* ---------- Логин ---------- */
+  .login {
+    min-height: 100vh; display: grid; place-items: center; padding: 16px;
+  }
+  .login-card { width: 100%; max-width: 420px; padding: 30px 26px; text-align: center; }
+  .login-card .logo { margin: 0 auto 16px; width: 60px; height: 60px; font-size: 28px; border-radius: 18px; }
+  .login-card h2 { margin: 0 0 6px; font-size: 21px; }
+  .login-card p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  .login-card code { background: var(--bg-2); border: 1px solid var(--line); padding: 1px 6px; border-radius: 6px; font-size: 12.5px; }
+  .login-card form { display: flex; flex-direction: column; gap: 10px; }
+  .login-err { color: var(--bad); font-size: 12.5px; min-height: 18px; }
+
+  /* ---------- Тосты ---------- */
+  .toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+  .toast {
+    padding: 10px 14px; border-radius: 12px; background: var(--card-solid); border: 1px solid var(--line-2);
+    box-shadow: var(--shadow); font-weight: 600; font-size: 13px; animation: rise .25s ease both;
+  }
+
+  .feed::-webkit-scrollbar, .list::-webkit-scrollbar { width: 6px; }
+  .feed::-webkit-scrollbar-thumb, .list::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 99px; }
+
+  @media (max-width: 960px) {
+    .grid { grid-template-columns: 1fr; }
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .modes { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 560px) {
+    .note-form { grid-template-columns: 1fr; }
+    .kpi .k-value { font-size: 24px; }
+    .mode .m-desc { display: none; }
+    .chip.hide-sm { display: none; }
+    .bar-row { grid-template-columns: 90px 1fr 26px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
 </head>
-<body class="min-h-screen selection:bg-indigo-600 selection:text-white">
+<body>
 
-  <!-- Ambient Dark Glows -->
-  <div class="fixed inset-0 overflow-hidden pointer-events-none -z-10 opacity-25">
-    <div class="absolute -top-40 -left-40 w-96 h-96 rounded-full bg-indigo-600 blur-[128px]"></div>
-    <div class="absolute top-1/2 -right-40 w-96 h-96 rounded-full bg-purple-600 blur-[128px]"></div>
-    <div class="absolute -bottom-40 left-1/3 w-96 h-96 rounded-full bg-cyan-600 blur-[128px]"></div>
+<!-- ================= ЭКРАН ВХОДА ================= -->
+<section id="loginView" class="login hidden">
+  <div class="card login-card">
+    <div class="logo">🤖</div>
+    <h2>ИИ-Ассистент</h2>
+    <p>Панель защищена ключом. Открой её по ссылке из команды <code>/panel</code> в боте или вставь ключ вручную.</p>
+    <form id="loginForm" autocomplete="off">
+      <input id="tokenInput" class="input" type="password" placeholder="Ключ доступа" aria-label="Ключ доступа">
+      <button class="btn" type="submit">Войти</button>
+      <div id="loginError" class="login-err" role="alert"></div>
+    </form>
   </div>
+</section>
 
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+<!-- ================= ПАНЕЛЬ ================= -->
+<main id="appView" class="wrap hidden">
 
-    <!-- Top Bar -->
-    <header class="card-dark rounded-2xl p-5 shadow-2xl flex flex-col lg:flex-row items-center justify-between gap-4">
-      <div class="flex items-center gap-4 w-full lg:w-auto">
-        <div class="relative shrink-0">
-          <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-indigo-500/20">
-            🤖
-          </div>
-          <span class="absolute -bottom-1 -right-1 flex h-3.5 w-3.5">
-            <span id="syncPulse" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span id="syncDot" class="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border-2 border-[#0d121f]"></span>
-          </span>
-        </div>
+  <div class="card">
+    <header class="top">
+      <div class="brand">
+        <div class="logo">🤖<span id="liveDot" class="live-dot"></span></div>
         <div>
-          <div class="flex items-center gap-2">
-            <h1 class="font-extrabold text-lg sm:text-xl tracking-tight text-white">Telegram AI Assistant</h1>
-            <span class="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-              Live Real-Time
-            </span>
-          </div>
-          <p class="text-xs text-slate-400">Прямое подключение к SQLite базе данных и активному боту</p>
+          <h1>ИИ-Ассистент</h1>
+          <p id="syncText">Подключение…</p>
         </div>
       </div>
-
-      <!-- Controls & Connection Status -->
-      <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto justify-start lg:justify-end text-xs">
-        
-        <!-- Live Status Pill -->
-        <div id="connectionStatusBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-300">
-          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span>Подключено: <b id="lastSyncTime" class="text-white">--:--:--</b></span>
-        </div>
-
-        <!-- Server Selector -->
-        <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1">
-          <span class="text-slate-400 text-[11px]">API:</span>
-          <input 
-            type="text" 
-            id="serverUrlInput" 
-            placeholder="http://localhost:8080" 
-            class="bg-transparent text-xs text-slate-200 focus:outline-none w-48 font-mono"
-            onchange="updateServerUrl()"
-          >
-          <button onclick="fetchLiveData()" title="Обновить сейчас" class="text-slate-400 hover:text-white transition">
-            🔄
-          </button>
-        </div>
-
-        <!-- Render Shortcut -->
-        <button onclick="setRenderUrl()" class="px-2.5 py-1 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/20 text-[11px] transition">
-          Render.com
-        </button>
+      <div class="top-right">
+        <span class="chip hide-sm">🧠 <b id="modelName">—</b></span>
+        <span class="chip hide-sm">🌍 <b id="tzLabel">—</b></span>
+        <button class="icon-btn" id="themeBtn" title="Сменить тему" aria-label="Сменить тему">🌓</button>
+        <button class="icon-btn" id="refreshBtn" title="Обновить" aria-label="Обновить">↻</button>
+        <button class="icon-btn" id="logoutBtn" title="Выйти" aria-label="Выйти">⎋</button>
       </div>
     </header>
-
-    <!-- Mode Control Bar -->
-    <div class="card-dark rounded-2xl p-4 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4">
-      <div class="flex items-center gap-3">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Текущий режим бота:</span>
-        <span id="activeModeBadge" class="px-3 py-1 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full bg-emerald-500"></span> DEFAULT
-        </span>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
-        <span class="text-xs text-slate-400 mr-1 hidden sm:inline">Переключить на лету:</span>
-        <button onclick="changeBotMode('default')" id="btn-mode-default" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-emerald-600 hover:text-white border border-slate-700">
-          🟢 Обычный
-        </button>
-        <button onclick="changeBotMode('sleep')" id="btn-mode-sleep" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-indigo-600 hover:text-white border border-slate-700">
-          🌙 Сплю
-        </button>
-        <button onclick="changeBotMode('busy')" id="btn-mode-busy" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-amber-600 hover:text-white border border-slate-700">
-          🎮 Занят
-        </button>
-        <button onclick="changeBotMode('ignore')" id="btn-mode-ignore" class="px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-800 text-slate-300 hover:bg-rose-600 hover:text-white border border-slate-700">
-          🔴 Игнор
-        </button>
-      </div>
-    </div>
-
-    <!-- Live Real Metrics Grid -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
-        <span class="text-xs text-slate-400">Сообщений в базе</span>
-        <p id="metricTotalMsgs" class="text-2xl font-black text-white">0</p>
-        <span class="text-[11px] text-slate-500">По таблице stats_log</span>
-      </div>
-
-      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
-        <span class="text-xs text-slate-400">Активных напоминаний</span>
-        <p id="metricRemindersCount" class="text-2xl font-black text-indigo-400">0</p>
-        <span class="text-[11px] text-slate-500">В статусе pending</span>
-      </div>
-
-      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
-        <span class="text-xs text-slate-400">Сохраненных заметок</span>
-        <p id="metricNotesCount" class="text-2xl font-black text-purple-400">0</p>
-        <span class="text-[11px] text-slate-500">В таблице notes</span>
-      </div>
-
-      <div class="card-dark rounded-2xl p-4 shadow-lg space-y-1">
-        <span class="text-xs text-slate-400">Ночных сообщений</span>
-        <p id="metricNightLogsCount" class="text-2xl font-black text-cyan-400">0</p>
-        <span class="text-[11px] text-slate-500">Для /goodmorning</span>
-      </div>
-    </div>
-
-    <!-- Main Live Sections -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-      <!-- Left Column (8 cols): Reminders & Notes -->
-      <div class="lg:col-span-8 space-y-6">
-
-        <!-- 1. Real Active Reminders Section -->
-        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
-          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div class="flex items-center gap-2">
-              <span class="text-indigo-400 text-lg font-bold">⏰</span>
-              <h2 class="font-bold text-base text-white">Активные напоминания в очереди</h2>
-              <span id="badgeRemCount" class="px-2 py-0.5 rounded-full text-xs font-bold bg-indigo-500/20 text-indigo-400">0</span>
-            </div>
-            <span class="text-[11px] text-slate-500">Воркер проверяет каждые 15 сек</span>
-          </div>
-
-          <!-- Reminders List Container -->
-          <div id="remindersContainer" class="space-y-2.5">
-            <!-- Dynamically populated or empty state -->
-          </div>
-        </div>
-
-        <!-- 2. Real Saved Notes Section -->
-        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
-          <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
-            <div class="flex items-center gap-2">
-              <span class="text-purple-400 text-lg font-bold">📝</span>
-              <h2 class="font-bold text-base text-white">Сохраненные заметки</h2>
-              <span id="badgeNotesCount" class="px-2 py-0.5 rounded-full text-xs font-bold bg-purple-500/20 text-purple-400">0</span>
-            </div>
-
-            <!-- Add Note Button -->
-            <button onclick="toggleAddNoteForm()" class="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow">
-              <span>+ Новая заметка</span>
-            </button>
-          </div>
-
-          <!-- Add Note Inline Form (Hidden by default) -->
-          <div id="addNoteForm" class="hidden p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-            <h3 class="font-semibold text-xs text-purple-300">Создать заметку в БД:</h3>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <select id="newNoteCategory" class="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-purple-500">
-                <option value="Учеба">🎓 Учеба</option>
-                <option value="Покупки">🛒 Покупки</option>
-                <option value="Софт/VPN">💻 Софт / VPN</option>
-                <option value="Идеи">💡 Идеи</option>
-                <option value="Другое">📌 Другое</option>
-              </select>
-              <input 
-                type="text" 
-                id="newNoteContent" 
-                placeholder="Текст заметки..." 
-                class="sm:col-span-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-purple-500"
-              >
-            </div>
-            <div class="flex justify-end gap-2">
-              <button onclick="toggleAddNoteForm()" class="px-3 py-1 rounded-xl text-xs text-slate-400 hover:text-white">Отмена</button>
-              <button onclick="submitNewNote()" class="px-4 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold shadow">Сохранить</button>
-            </div>
-          </div>
-
-          <!-- Category Filter Bar -->
-          <div class="flex flex-wrap gap-2 text-xs" id="noteCategoriesFilter">
-            <button onclick="filterNotes('all')" class="cat-chip px-2.5 py-1 rounded-lg bg-purple-600 text-white font-medium" data-cat="all">
-              Все (<span id="count-cat-all">0</span>)
-            </button>
-            <button onclick="filterNotes('Учеба')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Учеба">
-              🎓 Учеба (<span id="count-cat-Учеба">0</span>)
-            </button>
-            <button onclick="filterNotes('Покупки')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Покупки">
-              🛒 Покупки (<span id="count-cat-Покупки">0</span>)
-            </button>
-            <button onclick="filterNotes('Софт/VPN')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Софт/VPN">
-              💻 Софт/VPN (<span id="count-cat-Софт/VPN">0</span>)
-            </button>
-            <button onclick="filterNotes('Идеи')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Идеи">
-              💡 Идеи (<span id="count-cat-Идеи">0</span>)
-            </button>
-            <button onclick="filterNotes('Другое')" class="cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium" data-cat="Другое">
-              📌 Другое (<span id="count-cat-Другое">0</span>)
-            </button>
-          </div>
-
-          <!-- Notes Container -->
-          <div id="notesContainer" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <!-- Dynamically populated or empty state -->
-          </div>
-        </div>
-
-      </div>
-
-      <!-- Right Column (4 cols): Stats & Night Logs -->
-      <div class="lg:col-span-4 space-y-6">
-
-        <!-- 3. Category Breakdown Stats (Real from stats_log) -->
-        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
-          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-            <h3 class="font-bold text-sm text-white flex items-center gap-2">
-              <span>📊</span> Статистика категорий сообщений
-            </h3>
-            <span class="text-[11px] text-slate-500">stats_log</span>
-          </div>
-
-          <div id="categoryStatsBars" class="space-y-3">
-            <!-- Rendered from real DB counts -->
-          </div>
-        </div>
-
-        <!-- 4. Night Logs (Real from night_logs table) -->
-        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-4">
-          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-            <h3 class="font-bold text-sm text-cyan-400 flex items-center gap-2">
-              <span>🌙</span> Ночной дайджест (night_logs)
-            </h3>
-            <span id="badgeNightCount" class="text-xs font-semibold text-slate-400">0</span>
-          </div>
-          <p class="text-xs text-slate-400">Сообщения, полученные в режиме сна (/sleep). Команда /goodmorning отправляет их вам и очищает список.</p>
-
-          <div id="nightLogsContainer" class="space-y-2 max-h-72 overflow-y-auto custom-scrollbar">
-            <!-- Rendered from real DB -->
-          </div>
-        </div>
-
-        <!-- 5. System Status -->
-        <div class="card-dark rounded-2xl p-5 shadow-xl space-y-3 text-xs">
-          <h3 class="font-bold text-sm text-white flex items-center gap-2 border-b border-slate-800 pb-2">
-            <span>⚙️</span> Системные параметры
-          </h3>
-          <div class="space-y-2 text-slate-300">
-            <div class="flex justify-between py-1 border-b border-slate-800/60">
-              <span class="text-slate-400">Основная модель ИИ:</span>
-              <span class="font-mono text-purple-400">gemini-3.5-flash-lite</span>
-            </div>
-            <div class="flex justify-between py-1 border-b border-slate-800/60">
-              <span class="text-slate-400">Резервная модель:</span>
-              <span class="font-mono text-indigo-400">gemini-3.1-flash-lite</span>
-            </div>
-            <div class="flex justify-between py-1 border-b border-slate-800/60">
-              <span class="text-slate-400">Часовой пояс:</span>
-              <span id="sysTzBadge" class="font-mono text-white">UTC+3 (MSK)</span>
-            </div>
-            <div class="flex justify-between py-1 border-b border-slate-800/60">
-              <span class="text-slate-400">Режим БД:</span>
-              <span class="font-mono text-emerald-400">SQLite WAL (5s timeout)</span>
-            </div>
-            <div class="flex justify-between py-1">
-              <span class="text-slate-400">Веб-сервер:</span>
-              <span class="font-mono text-cyan-400">aiohttp.web (Port 8080)</span>
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-    </div>
-
+    <div class="modes" id="modes"></div>
   </div>
 
-  <!-- Real-Time Client Script -->
-  <script>
-    // State
-    let liveState = {
-      status: 'default',
-      stats: { total: 0, categories: {} },
-      reminders: [],
-      notes: [],
-      notes_categories: {},
-      night_logs: [],
-      timezone_offset: 3,
-      currentCatFilter: 'all'
-    };
+  <section class="kpis">
+    <div class="card kpi"><div class="k-label">💬 Ответов ИИ за сутки</div><div class="k-value" id="kReplies">0</div><div class="k-sub" id="kRepliesSub">—</div></div>
+    <div class="card kpi"><div class="k-label">⏰ Напоминаний</div><div class="k-value" id="kReminders">0</div><div class="k-sub">в очереди</div></div>
+    <div class="card kpi"><div class="k-label">📝 Заметок</div><div class="k-value" id="kNotes">0</div><div class="k-sub">во всех категориях</div></div>
+    <div class="card kpi"><div class="k-label">📨 Обработано всего</div><div class="k-value" id="kTotal">0</div><div class="k-sub" id="kNight">—</div></div>
+  </section>
 
-    // Determine initial API URL
-    function getInitialApiUrl() {
-      if (window.location.protocol.startsWith('http')) {
-        return window.location.origin;
-      }
-      return localStorage.getItem('assistant_api_url') || 'http://localhost:8080';
-    }
-
-    let apiUrl = getInitialApiUrl();
-    document.getElementById('serverUrlInput').value = apiUrl;
-
-    function updateServerUrl() {
-      apiUrl = document.getElementById('serverUrlInput').value.trim();
-      localStorage.setItem('assistant_api_url', apiUrl);
-      fetchLiveData();
-    }
-
-    function setRenderUrl() {
-      apiUrl = 'https://tg-ai-assistant-bot.onrender.com';
-      document.getElementById('serverUrlInput').value = apiUrl;
-      localStorage.setItem('assistant_api_url', apiUrl);
-      fetchLiveData();
-    }
-
-    // Live Fetch Routine
-    let isFetching = false;
-    async function fetchLiveData() {
-      if (isFetching) return;
-      isFetching = true;
-
-      try {
-        const cleanUrl = apiUrl.replace(/\/+$/, '');
-        const res = await fetch(`${cleanUrl}/api/data`, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' }
-        });
-
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-
-        if (data.ok) {
-          liveState.status = data.status || 'default';
-          liveState.stats = data.stats || { total: 0, categories: {} };
-          liveState.reminders = data.reminders || [];
-          liveState.notes = data.notes || [];
-          liveState.notes_categories = data.notes_categories || {};
-          liveState.night_logs = data.night_logs || [];
-          liveState.timezone_offset = data.timezone_offset || 3;
-
-          renderAll();
-          setConnectionStatus(true);
-        } else {
-          throw new Error(data.error || 'Server reported false');
-        }
-      } catch (err) {
-        setConnectionStatus(false, err.message);
-      } finally {
-        isFetching = false;
-      }
-    }
-
-    function setConnectionStatus(connected, errDetail = '') {
-      const badge = document.getElementById('connectionStatusBadge');
-      const dot = document.getElementById('syncDot');
-      const pulse = document.getElementById('syncPulse');
-      const timeEl = document.getElementById('lastSyncTime');
-
-      if (connected) {
-        const now = new Date();
-        const timeStr = String(now.getHours()).padStart(2, '0') + ':' + 
-                        String(now.getMinutes()).padStart(2, '0') + ':' + 
-                        String(now.getSeconds()).padStart(2, '0');
-        timeEl.innerText = timeStr;
-        badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300';
-        dot.className = 'relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500 border-2 border-[#0d121f]';
-        pulse.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75';
-      } else {
-        timeEl.innerText = 'Офлайн';
-        badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300';
-        dot.className = 'relative inline-flex rounded-full h-3.5 w-3.5 bg-rose-500 border-2 border-[#0d121f]';
-        pulse.className = 'hidden';
-      }
-    }
-
-    // Render Everything
-    function renderAll() {
-      renderMode();
-      renderMetrics();
-      renderReminders();
-      renderNotes();
-      renderCategoryStats();
-      renderNightLogs();
-    }
-
-    // Mode Rendering
-    function renderMode() {
-      const mode = liveState.status.toLowerCase();
-      const badge = document.getElementById('activeModeBadge');
-      
-      const config = {
-        default: { color: 'emerald', text: '🟢 DEFAULT (Обычный)' },
-        sleep: { color: 'indigo', text: '🌙 SLEEP (Сплю)' },
-        busy: { color: 'amber', text: '🎮 BUSY (Занят)' },
-        ignore: { color: 'rose', text: '🔴 IGNORE (Игнор)' }
-      }[mode] || { color: 'emerald', text: mode.toUpperCase() };
-
-      badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-${config.color}-500"></span> ${config.text}`;
-      badge.className = `px-3 py-1 rounded-xl text-xs font-bold bg-${config.color}-500/10 text-${config.color}-400 border border-${config.color}-500/30 flex items-center gap-1.5`;
-
-      // Highlight active button
-      ['default', 'sleep', 'busy', 'ignore'].forEach(m => {
-        const btn = document.getElementById(`btn-mode-${m}`);
-        if (!btn) return;
-        if (m === mode) {
-          btn.className = `px-3 py-1.5 rounded-xl text-xs font-bold transition bg-indigo-600 text-white shadow-md ring-2 ring-indigo-400`;
-        } else {
-          btn.className = `px-3 py-1.5 rounded-xl text-xs font-semibold transition bg-slate-900 text-slate-400 hover:text-white border border-slate-800`;
-        }
-      });
-    }
-
-    // Change Bot Mode Live
-    async function changeBotMode(newMode) {
-      try {
-        const cleanUrl = apiUrl.replace(/\/+$/, '');
-        const res = await fetch(`${cleanUrl}/api/mode`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: newMode })
-        });
-        const data = await res.json();
-        if (data.ok) {
-          liveState.status = newMode;
-          renderMode();
-        }
-      } catch (e) {
-        console.error('Mode change error:', e);
-      }
-    }
-
-    // Metrics Rendering
-    function renderMetrics() {
-      document.getElementById('metricTotalMsgs').innerText = liveState.stats.total || 0;
-      document.getElementById('metricRemindersCount').innerText = liveState.reminders.length || 0;
-      document.getElementById('metricNotesCount').innerText = liveState.notes.length || 0;
-      document.getElementById('metricNightLogsCount').innerText = liveState.night_logs.length || 0;
-
-      document.getElementById('badgeRemCount').innerText = liveState.reminders.length || 0;
-      document.getElementById('badgeNotesCount').innerText = liveState.notes.length || 0;
-      document.getElementById('badgeNightCount').innerText = `${liveState.night_logs.length} в логе`;
-
-      const tzSign = liveState.timezone_offset >= 0 ? '+' : '';
-      document.getElementById('sysTzBadge').innerText = `UTC${tzSign}${liveState.timezone_offset}`;
-    }
-
-    // Reminders Rendering (Real rows or Empty State)
-    function renderReminders() {
-      const container = document.getElementById('remindersContainer');
-      const items = liveState.reminders;
-
-      if (!items || items.length === 0) {
-        container.innerHTML = `
-          <div class="p-8 text-center rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
-            <span class="text-3xl block">📭</span>
-            <p class="text-sm font-semibold text-slate-300">Нет активных напоминаний в базе данных</p>
-            <p class="text-xs text-slate-500 max-w-sm mx-auto">
-              Отправьте боту в Telegram сообщение с датой или временем, например:
-              <br><code class="text-indigo-400 font-mono mt-1 inline-block">«завтра в 14:00 скинуть отчет»</code>
-            </p>
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = items.map((r, idx) => {
-        const timeDisplay = r.remind_at_local ? r.remind_at_local.slice(0, 16) : 'Не указано';
-        const sourceHtml = r.source_info ? `<span class="text-[10px] text-slate-500 block truncate">📌 ${escapeHtml(r.source_info)}</span>` : '';
-
-        return `
-          <div class="p-4 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-indigo-500/40 transition flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 group">
-            <div class="space-y-1 min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                  📅 ${escapeHtml(timeDisplay)}
-                </span>
-                <span class="text-[10px] text-slate-500 font-mono">ID #${r.id}</span>
-              </div>
-              <p class="font-bold text-sm text-white group-hover:text-indigo-300 transition">${escapeHtml(r.text)}</p>
-              ${sourceHtml}
-            </div>
-
-            <div class="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
-              <button onclick="handleReminderAction('complete', ${r.id})" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 text-xs font-semibold transition" title="Отметить выполненным">
-                ✓ Выполнено
-              </button>
-              <button onclick="handleReminderAction('snooze', ${r.id}, 15)" class="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 text-xs font-semibold transition" title="Отложить на 15 мин">
-                +15м
-              </button>
-              <button onclick="handleReminderAction('delete', ${r.id})" class="px-2.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-semibold transition" title="Удалить из БД">
-                🗑
-              </button>
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    async function handleReminderAction(action, remId, minutes = 15) {
-      try {
-        const cleanUrl = apiUrl.replace(/\/+$/, '');
-        await fetch(`${cleanUrl}/api/reminders/action`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, id: remId, minutes })
-        });
-        await fetchLiveData();
-      } catch (e) {
-        console.error('Reminder action error:', e);
-      }
-    }
-
-    // Notes Rendering (Real notes or Empty State)
-    const catIcons = {
-      'Учеба': '🎓',
-      'Покупки': '🛒',
-      'Софт/VPN': '💻',
-      'Идеи': '💡',
-      'Другое': '📌'
-    };
-
-    function renderNotes() {
-      const container = document.getElementById('notesContainer');
-      const allNotes = liveState.notes;
-
-      // Update Category Counts
-      document.getElementById('count-cat-all').innerText = allNotes.length;
-      ['Учеба', 'Покупки', 'Софт/VPN', 'Идеи', 'Другое'].forEach(c => {
-        const count = liveState.notes_categories[c] || 0;
-        const el = document.getElementById(`count-cat-${c}`);
-        if (el) el.innerText = count;
-      });
-
-      // Filter
-      const filtered = liveState.currentCatFilter === 'all' 
-        ? allNotes 
-        : allNotes.filter(n => (n.category || '').toLowerCase() === liveState.currentCatFilter.toLowerCase());
-
-      if (!filtered || filtered.length === 0) {
-        container.innerHTML = `
-          <div class="col-span-full p-8 text-center rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
-            <span class="text-3xl block">📝</span>
-            <p class="text-sm font-semibold text-slate-300">Заметок в этой категории пока нет</p>
-            <p class="text-xs text-slate-500">Нажмите «+ Новая заметка» выше или отправьте сообщение боту в Telegram</p>
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = filtered.map(n => {
-        const cat = n.category || 'Другое';
-        const icon = catIcons[cat] || '📌';
-        const dateStr = n.created_at ? n.created_at.slice(0, 16) : '';
-
-        return `
-          <div class="p-4 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-purple-500/40 transition flex flex-col justify-between gap-3 group">
-            <div class="space-y-1.5">
-              <div class="flex items-center justify-between">
-                <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                  ${icon} ${escapeHtml(cat)}
-                </span>
-                <span class="text-[10px] text-slate-500 font-mono">${escapeHtml(dateStr)}</span>
-              </div>
-              <p class="text-xs text-slate-200 leading-relaxed font-medium">${escapeHtml(n.content)}</p>
-            </div>
-            <div class="flex justify-between items-center pt-2 border-t border-slate-800/80 text-[11px]">
-              <span class="text-slate-600 font-mono">ID #${n.id}</span>
-              <button onclick="deleteNoteAction(${n.id})" class="text-rose-400 hover:text-rose-300 transition flex items-center gap-1 font-semibold">
-                <span>Удалить</span> 🗑
-              </button>
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    function filterNotes(category) {
-      liveState.currentCatFilter = category;
-      document.querySelectorAll('.cat-chip').forEach(btn => {
-        if (btn.dataset.cat === category) {
-          btn.className = 'cat-chip px-2.5 py-1 rounded-lg bg-purple-600 text-white font-medium';
-        } else {
-          btn.className = 'cat-chip px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white font-medium';
-        }
-      });
-      renderNotes();
-    }
-
-    function toggleAddNoteForm() {
-      const el = document.getElementById('addNoteForm');
-      el.classList.toggle('hidden');
-    }
-
-    async function submitNewNote() {
-      const cat = document.getElementById('newNoteCategory').value;
-      const content = document.getElementById('newNoteContent').value.trim();
-      if (!content) return;
-
-      try {
-        const cleanUrl = apiUrl.replace(/\/+$/, '');
-        await fetch(`${cleanUrl}/api/notes/action`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'create', category: cat, content })
-        });
-        document.getElementById('newNoteContent').value = '';
-        toggleAddNoteForm();
-        await fetchLiveData();
-      } catch (e) {
-        console.error('Note add error:', e);
-      }
-    }
-
-    async function deleteNoteAction(noteId) {
-      try {
-        const cleanUrl = apiUrl.replace(/\/+$/, '');
-        await fetch(`${cleanUrl}/api/notes/action`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'delete', id: noteId })
-        });
-        await fetchLiveData();
-      } catch (e) {
-        console.error('Note delete error:', e);
-      }
-    }
-
-    // Category Stats Breakdown (Real from stats_log)
-    function renderCategoryStats() {
-      const container = document.getElementById('categoryStatsBars');
-      const cats = liveState.stats.categories || {};
-      const total = liveState.stats.total || 0;
-
-      const labels = [
-        { key: 'personal', title: '👥 Личные', color: 'indigo' },
-        { key: 'formal', title: '💬 Обычные', color: 'blue' },
-        { key: 'tech_vpn', title: '💻 Софт / VPN', color: 'purple' },
-        { key: 'urgent', title: '🚨 Срочные', color: 'rose' }
-      ];
-
-      if (total === 0) {
-        container.innerHTML = `
-          <div class="py-4 text-center text-xs text-slate-500">
-            Сообщений в stats_log пока нет.
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = labels.map(l => {
-        const count = cats[l.key] || 0;
-        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-
-        return `
-          <div class="space-y-1">
-            <div class="flex justify-between text-xs">
-              <span class="text-slate-300 font-medium">${l.title}</span>
-              <span class="text-slate-400 font-mono">${count} (${pct}%)</span>
-            </div>
-            <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
-              <div class="bg-${l.color}-500 h-2 rounded-full transition-all duration-500" style="width: ${pct}%"></div>
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    // Night Logs Rendering
-    function renderNightLogs() {
-      const container = document.getElementById('nightLogsContainer');
-      const logs = liveState.night_logs || [];
-
-      if (logs.length === 0) {
-        container.innerHTML = `
-          <div class="py-6 text-center text-xs text-slate-500">
-            Ночью сообщений не поступало.
-          </div>
-        `;
-        return;
-      }
-
-      container.innerHTML = logs.map(l => `
-        <div class="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs space-y-1">
-          <div class="flex justify-between items-center">
-            <b class="text-cyan-300">${escapeHtml(l.sender_name || 'Неизвестный')}</b>
-            <span class="text-[10px] text-slate-500 font-mono">${escapeHtml(l.timestamp ? l.timestamp.slice(11, 16) : '')}</span>
-          </div>
-          <p class="text-slate-300">${escapeHtml(l.message_text)}</p>
+  <div class="grid">
+    <div class="col">
+      <!-- Лента ответов -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="ico">⚡</span> Лента ассистента <span class="pill" id="feedCount">0</span></div>
+          <button class="act bad" id="clearFeedBtn" title="Очистить ленту">Очистить</button>
         </div>
-      `).join('');
-    }
+        <div class="card-body">
+          <div class="tabs" id="feedTabs" style="margin-bottom:12px"></div>
+          <div class="feed" id="feed"></div>
+        </div>
+      </section>
+    </div>
 
-    function escapeHtml(text) {
-      if (!text) return '';
-      const div = document.createElement('div');
-      div.innerText = String(text);
-      return div.innerHTML;
-    }
+    <div class="col">
+      <!-- Напоминания -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="ico">⏰</span> Напоминания <span class="pill" id="remCount">0</span></div>
+        </div>
+        <div class="card-body"><div class="list" id="reminders"></div></div>
+      </section>
 
-    // Initial Fetch & Real-time interval (every 3 seconds)
-    fetchLiveData();
-    setInterval(fetchLiveData, 3000);
-  </script>
+      <!-- Категории сообщений -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="ico">📊</span> Типы сообщений</div>
+        </div>
+        <div class="card-body"><div class="bars" id="bars"></div></div>
+      </section>
+
+      <!-- Ночной дайджест -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="ico">🌙</span> Ночной дайджест <span class="pill" id="nightCount">0</span></div>
+        </div>
+        <div class="card-body"><div class="list" id="night"></div></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Заметки -->
+  <section class="card" style="margin-top:14px">
+    <div class="card-head">
+      <div class="card-title"><span class="ico">📝</span> Заметки <span class="pill" id="notesCount">0</span></div>
+    </div>
+    <div class="card-body">
+      <form class="note-form" id="noteForm" autocomplete="off">
+        <select class="input" id="noteCat" aria-label="Категория"></select>
+        <input class="input" id="noteText" maxlength="2000" placeholder="Новая заметка…" aria-label="Текст заметки">
+        <button class="btn" type="submit">Добавить</button>
+      </form>
+      <div class="tabs notes-tools" id="noteTabs"></div>
+      <div class="notes-grid" id="notes"></div>
+    </div>
+  </section>
+</main>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+(() => {
+  const TOKEN_KEY = 'assistant_panel_token';
+  const THEME_KEY = 'assistant_panel_theme';
+  const REFRESH_MS = 5000;
+
+  const MODES = [
+    { key: 'default', emoji: '💼', title: 'Обычный', desc: 'ИИ отвечает за тебя' },
+    { key: 'busy', emoji: '🎮', title: 'Занят', desc: 'Пропускает только «срочно»' },
+    { key: 'sleep', emoji: '🌙', title: 'Сплю', desc: 'Копит сообщения до утра' },
+    { key: 'ignore', emoji: '🚫', title: 'Не беспокоить', desc: 'Сообщает, что ты не на связи' },
+  ];
+  const KINDS = {
+    reply: { label: 'Ответ ИИ', tab: '🤖 Ответы' },
+    personal: { label: 'Личное', tab: '📥 Личное' },
+    status: { label: 'Автостатус', tab: '💤 Автостатус' },
+    tone: { label: 'Тон', tab: '⚠️ Тон' },
+    screenshot: { label: 'Скриншот', tab: '📸 Скрины' },
+  };
+  const CAT_ICONS = { 'Учеба': '🎓', 'Покупки': '🛒', 'Софт/VPN': '💻', 'Идеи': '💡', 'Другое': '📌' };
+  const MSG_CATS = [
+    ['formal', '💬 Обычные'], ['personal', '👥 Личные'], ['tech_vpn', '💻 Технические'], ['urgent', '🚨 Срочные'],
+  ];
+  const AVATAR_COLORS = ['#7c6cff', '#ff7ad9', '#4fd1ff', '#3ddc97', '#ffb547', '#ff5f7e', '#9a7bff'];
+
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} },
+  };
+
+  let token = null;
+  let data = null;
+  let feedFilter = 'all';
+  let noteFilter = 'all';
+  let timer = null;
+  let lastFeedSig = '';
+
+  // ---------- Утилиты ----------
+  function esc(v) {
+    return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  function utcDate(s) { return s ? new Date(String(s).replace(' ', 'T') + 'Z') : null; }
+  function ago(s) {
+    const d = utcDate(s); if (!d || isNaN(d)) return '';
+    const sec = Math.round((Date.now() - d) / 1000);
+    if (sec < 60) return 'только что';
+    if (sec < 3600) return `${Math.floor(sec / 60)} мин назад`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)} ч назад`;
+    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' }) + ', ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+  function localDt(s) {
+    if (!s) return '—';
+    const [d, t] = String(s).split(' ');
+    const [, m, day] = (d || '').split('-');
+    return day && m ? `${day}.${m} ${(t || '').slice(0, 5)}` : s;
+  }
+  function avatar(name) {
+    const n = String(name || '?').trim();
+    let h = 0; for (const ch of n) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return `<div class="avatar" style="background:${AVATAR_COLORS[h % AVATAR_COLORS.length]}">${esc([...n][0] || '?').toUpperCase()}</div>`;
+  }
+  function empty(icon, text) { return `<div class="empty"><span class="e-ico">${icon}</span>${text}</div>`; }
+  function toast(text) {
+    const el = document.createElement('div');
+    el.className = 'toast'; el.textContent = text;
+    $('toasts').appendChild(el);
+    setTimeout(() => el.remove(), 2600);
+  }
+
+  // ---------- API ----------
+  async function api(path, body) {
+    const res = await fetch(path, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Authorization': `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+    });
+    if (res.status === 401) { logout('Ключ не подошёл или был изменён. Получи новую ссылку командой /panel.'); throw new Error('unauthorized'); }
+    if (res.status === 429) { logout('Слишком много неверных попыток. Подожди 10 минут.'); throw new Error('rate'); }
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.ok === false) throw new Error(json.error || `HTTP ${res.status}`);
+    return json;
+  }
+
+  async function refresh() {
+    try {
+      data = await api('/api/data');
+      $('liveDot').classList.remove('off');
+      $('syncText').textContent = 'В сети · обновлено ' + new Date().toLocaleTimeString('ru-RU');
+      render();
+    } catch (e) {
+      if (e.message === 'unauthorized' || e.message === 'rate') return;
+      $('liveDot').classList.add('off');
+      $('syncText').textContent = 'Нет связи с ботом · повторю через 5 сек';
+    }
+  }
+
+  function startLoop() {
+    stopLoop();
+    refresh();
+    timer = setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);
+  }
+  function stopLoop() { if (timer) clearInterval(timer); timer = null; }
+
+  // ---------- Рендер ----------
+  function render() {
+    if (!data) return;
+    $('modelName').textContent = data.model || '—';
+    const tz = Number(data.timezone_offset ?? 3);
+    $('tzLabel').textContent = `UTC${tz >= 0 ? '+' : ''}${tz}`;
+
+    renderModes();
+    renderKpis();
+    renderFeed();
+    renderReminders();
+    renderBars();
+    renderNight();
+    renderNotes();
+  }
+
+  function renderModes() {
+    $('modes').innerHTML = MODES.map(m => `
+      <button class="mode ${data.status === m.key ? 'active' : ''}" data-mode="${m.key}">
+        <div class="m-emoji">${m.emoji}</div>
+        <div class="m-title">${m.title}</div>
+        <div class="m-desc">${m.desc}</div>
+      </button>`).join('');
+  }
+
+  function renderKpis() {
+    const a = data.activity_24h || {};
+    const notesTotal = Object.values(data.notes_categories || {}).reduce((s, v) => s + v, 0);
+    $('kReplies').textContent = a.reply || 0;
+    $('kRepliesSub').textContent = `переслано тебе: ${a.personal || 0} · автостатус: ${a.status || 0}`;
+    $('kReminders').textContent = (data.reminders || []).length;
+    $('kNotes').textContent = notesTotal;
+    $('kTotal').textContent = data.stats?.total || 0;
+    $('kNight').textContent = `ночью написали: ${(data.night_logs || []).length}`;
+  }
+
+  function renderFeed() {
+    const all = data.activity || [];
+    const counts = all.reduce((m, e) => (m[e.kind] = (m[e.kind] || 0) + 1, m), {});
+    const tabs = [['all', `Все · ${all.length}`], ...Object.entries(KINDS).filter(([k]) => counts[k]).map(([k, v]) => [k, `${v.tab} · ${counts[k]}`])];
+    if (feedFilter !== 'all' && !counts[feedFilter]) feedFilter = 'all';
+    $('feedTabs').innerHTML = tabs.map(([k, t]) => `<button class="tab ${feedFilter === k ? 'active' : ''}" data-feed="${k}">${t}</button>`).join('');
+    $('feedCount').textContent = all.length;
+
+    const items = feedFilter === 'all' ? all : all.filter(e => e.kind === feedFilter);
+    const sig = feedFilter + '|' + items.map(e => e.id).join(',');
+    if (sig === lastFeedSig) {
+      // Обновляем только относительное время, без перерисовки (не дёргаем скролл)
+      document.querySelectorAll('[data-ago]').forEach(el => el.textContent = ago(el.dataset.ago));
+      return;
+    }
+    lastFeedSig = sig;
+
+    if (!items.length) {
+      $('feed').innerHTML = empty('🤖', 'Здесь появятся ответы ИИ и пересланные тебе сообщения.<br>Пока тихо.');
+      return;
+    }
+    $('feed').innerHTML = items.map(e => {
+      const kind = KINDS[e.kind] || { label: e.kind };
+      const reply = e.reply ? `
+        <div class="bubble ai"><div class="bubble-label">🤖 Ассистент</div>${esc(e.reply)}</div>` : '';
+      const summary = e.summary ? `<div class="summary">💡 <span>${esc(e.summary)}</span></div>` : '';
+      return `
+        <article class="event">
+          <div class="ev-head">
+            ${avatar(e.sender_name)}
+            <div class="ev-who">
+              <div class="ev-name">${esc(e.sender_name || 'Без имени')}</div>
+              <div class="ev-meta"><span data-ago="${esc(e.created_at)}">${ago(e.created_at)}</span>${e.chat_id ? ` · чат ${esc(e.chat_id)}` : ''}</div>
+            </div>
+            <span class="tag ${esc(e.kind)}">${esc(kind.label)}</span>
+          </div>
+          ${e.incoming ? `<div class="bubble">${esc(e.incoming)}</div>` : ''}
+          ${reply}
+          ${summary}
+        </article>`;
+    }).join('');
+  }
+
+  function renderReminders() {
+    const items = data.reminders || [];
+    $('remCount').textContent = items.length;
+    if (!items.length) {
+      $('reminders').innerHTML = empty('⏰', 'Очередь пуста.<br>Напиши боту: «завтра в 14:00 отчёт»');
+      return;
+    }
+    $('reminders').innerHTML = items.map(r => `
+      <div class="row">
+        <div class="row-main">
+          <span class="time-badge">${esc(localDt(r.remind_at_local))}</span>
+          <div class="row-title">${esc(r.text)}</div>
+          ${r.source_info ? `<div class="row-sub">📎 ${esc(r.source_info)}</div>` : ''}
+        </div>
+        <div class="actions">
+          <button class="act ok" data-rem="complete" data-id="${r.id}" title="Выполнено">✓</button>
+          <button class="act warn" data-rem="snooze" data-id="${r.id}" title="Отложить на 15 минут">+15м</button>
+          <button class="act bad" data-rem="delete" data-id="${r.id}" title="Удалить">✕</button>
+        </div>
+      </div>`).join('');
+  }
+
+  function renderBars() {
+    const cats = data.stats?.categories || {};
+    const max = Math.max(1, ...MSG_CATS.map(([k]) => cats[k] || 0));
+    $('bars').innerHTML = MSG_CATS.map(([k, label]) => {
+      const n = cats[k] || 0;
+      return `<div class="bar-row"><span>${label}</span><div class="bar-track"><div class="bar-fill" style="width:${(n / max) * 100}%"></div></div><span class="bar-num">${n}</span></div>`;
+    }).join('');
+  }
+
+  function renderNight() {
+    const logs = data.night_logs || [];
+    $('nightCount').textContent = logs.length;
+    if (!logs.length) {
+      $('night').innerHTML = empty('🌙', 'Ночью никто не писал.<br>В режиме «Сплю» сообщения копятся здесь.');
+      return;
+    }
+    $('night').innerHTML = logs.map(l => `
+      <div class="row">
+        ${avatar(l.sender_name)}
+        <div class="row-main">
+          <div class="row-title">${esc(l.sender_name || 'Без имени')}</div>
+          <div class="row-sub" style="color:var(--muted);font-size:12.5px">${esc(l.message_text)}</div>
+        </div>
+        <span class="row-sub">${esc(ago(l.timestamp))}</span>
+      </div>`).join('');
+  }
+
+  function renderNotes() {
+    const counts = data.notes_categories || {};
+    const notes = data.notes || [];
+    const sel = $('noteCat');
+    if (!sel.options.length) {
+      sel.innerHTML = Object.keys(CAT_ICONS).map(c => `<option value="${c}">${CAT_ICONS[c]} ${c}</option>`).join('');
+      sel.value = 'Другое';
+    }
+    const total = Object.values(counts).reduce((s, v) => s + v, 0);
+    $('notesCount').textContent = total;
+    $('noteTabs').innerHTML = [['all', `Все · ${total}`], ...Object.keys(CAT_ICONS).map(c => [c, `${CAT_ICONS[c]} ${c} · ${counts[c] || 0}`])]
+      .map(([k, t]) => `<button class="tab ${noteFilter === k ? 'active' : ''}" data-ncat="${esc(k)}">${esc(t)}</button>`).join('');
+
+    const items = noteFilter === 'all' ? notes : notes.filter(n => n.category === noteFilter);
+    if (!items.length) {
+      $('notes').innerHTML = empty('📝', 'Заметок пока нет — добавь первую выше или напиши боту.');
+      return;
+    }
+    $('notes').innerHTML = items.map(n => `
+      <div class="note">
+        <div class="note-top"><span class="note-cat">${CAT_ICONS[n.category] || '📌'} ${esc(n.category)}</span><span>${esc(ago(n.created_at))}</span></div>
+        <div class="note-text">${esc(n.content)}</div>
+        <button class="act bad" data-note-del="${n.id}">Удалить</button>
+      </div>`).join('');
+  }
+
+  // ---------- Действия ----------
+  document.addEventListener('click', async (ev) => {
+    const t = ev.target.closest('button');
+    if (!t) return;
+
+    if (t.dataset.mode) {
+      try {
+        await api('/api/mode', { mode: t.dataset.mode });
+        const m = MODES.find(x => x.key === t.dataset.mode);
+        toast(`${m.emoji} Режим: ${m.title}`);
+        refresh();
+      } catch (e) { toast('Не удалось сменить режим'); }
+    } else if (t.dataset.feed) {
+      feedFilter = t.dataset.feed; renderFeed();
+    } else if (t.dataset.ncat) {
+      noteFilter = t.dataset.ncat; renderNotes();
+    } else if (t.dataset.rem) {
+      t.disabled = true;
+      try {
+        await api('/api/reminders/action', { action: t.dataset.rem, id: Number(t.dataset.id), minutes: 15 });
+        toast({ complete: '✅ Выполнено', snooze: '⏰ Отложено на 15 минут', delete: '🗑 Удалено' }[t.dataset.rem]);
+        refresh();
+      } catch (e) { toast('Ошибка: ' + e.message); t.disabled = false; }
+    } else if (t.dataset.noteDel) {
+      t.disabled = true;
+      try { await api('/api/notes/action', { action: 'delete', id: Number(t.dataset.noteDel) }); toast('🗑 Заметка удалена'); refresh(); }
+      catch (e) { toast('Ошибка: ' + e.message); t.disabled = false; }
+    }
+  });
+
+  $('noteForm').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const content = $('noteText').value.trim();
+    if (!content) return;
+    const btn = ev.submitter || $('noteForm').querySelector('button');
+    btn.disabled = true;
+    try {
+      await api('/api/notes/action', { action: 'create', category: $('noteCat').value, content });
+      $('noteText').value = '';
+      toast('📝 Заметка сохранена');
+      refresh();
+    } catch (e) { toast('Ошибка: ' + e.message); }
+    btn.disabled = false;
+  });
+
+  $('clearFeedBtn').addEventListener('click', async () => {
+    if (!confirm('Очистить ленту ассистента? Это удалит историю ответов из панели.')) return;
+    try { await api('/api/activity/clear', {}); lastFeedSig = ''; toast('🧹 Лента очищена'); refresh(); }
+    catch (e) { toast('Ошибка: ' + e.message); }
+  });
+  $('refreshBtn').addEventListener('click', () => { refresh(); toast('↻ Обновлено'); });
+  $('logoutBtn').addEventListener('click', () => logout(''));
+  $('themeBtn').addEventListener('click', () => {
+    const cur = document.documentElement.dataset.theme
+      || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    const next = cur === 'light' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = next;
+    store.set(THEME_KEY, next);
+  });
+
+  // ---------- Вход / выход ----------
+  function showApp() {
+    $('loginView').classList.add('hidden');
+    $('appView').classList.remove('hidden');
+    startLoop();
+  }
+  function logout(msg) {
+    stopLoop();
+    token = null; data = null; lastFeedSig = '';
+    store.del(TOKEN_KEY);
+    $('appView').classList.add('hidden');
+    $('loginView').classList.remove('hidden');
+    $('loginError').textContent = msg || '';
+    $('tokenInput').value = '';
+  }
+  $('loginForm').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const v = $('tokenInput').value.trim();
+    if (!v) return;
+    token = v; store.set(TOKEN_KEY, v);
+    $('loginError').textContent = '';
+    showApp();
+  });
+
+  // ---------- Старт ----------
+  const savedTheme = store.get(THEME_KEY);
+  if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+
+  // Ключ из ссылки /panel приходит во фрагменте #token=… — сохраняем и убираем из адресной строки
+  const hash = new URLSearchParams(location.hash.slice(1));
+  if (hash.get('token')) {
+    store.set(TOKEN_KEY, hash.get('token'));
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+  token = hash.get('token') || store.get(TOKEN_KEY);
+  if (token) showApp(); else logout('');
+
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && token) refresh(); });
+})();
+</script>
 </body>
 </html>
