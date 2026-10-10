@@ -655,18 +655,31 @@ async def handle_business_message(message: types.Message):
         if text.startswith("~"):
             clean_text = text[1:].strip()
             if clean_text:
-                try:
-                    cute_text = await make_cute_text(clean_text)
-                    if cute_text:
-                        await bot.edit_message_text(
-                            text=cute_text,
-                            chat_id=chat_id,
-                            message_id=message.message_id,
-                            business_connection_id=message.business_connection_id,
-                            parse_mode=None
-                        )
-                except Exception as e:
-                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+                async def _process_cute_text(c_text, c_id, m_id, bc_id):
+                    try:
+                        cute_text = await make_cute_text(c_text)
+                        if cute_text:
+                            await bot.edit_message_text(
+                                text=cute_text,
+                                chat_id=c_id,
+                                message_id=m_id,
+                                business_connection_id=bc_id,
+                                parse_mode=None
+                            )
+                    except Exception as e:
+                        logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+
+                # Keep a strong reference to the task so it doesn't get garbage collected mid-execution
+                task = asyncio.create_task(_process_cute_text(
+                    clean_text,
+                    chat_id,
+                    message.message_id,
+                    message.business_connection_id
+                ))
+                if not hasattr(bot, "_bg_tasks"):
+                    bot._bg_tasks = set()
+                bot._bg_tasks.add(task)
+                task.add_done_callback(bot._bg_tasks.discard)
 
         # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
         if not was_paused:
