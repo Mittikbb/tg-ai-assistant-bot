@@ -1,22 +1,53 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+_local = threading.local()
+
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    if not hasattr(_local, "conn"):
+        _local.conn = sqlite3.connect(DB_NAME, timeout=15.0)
+        _local.conn.execute("PRAGMA journal_mode=WAL;")
+        _local.conn.execute("PRAGMA busy_timeout=5000;")
+        _local.depth = 0
+
+    conn = _local.conn
     cursor = conn.cursor()
+    _local.depth += 1
+
     try:
-        yield cursor
-        if commit:
-            conn.commit()
+        if _local.depth > 1:
+            savepoint = f"sp_{_local.depth}"
+            cursor.execute(f"SAVEPOINT {savepoint}")
+            try:
+                yield cursor
+                if commit:
+                    cursor.execute(f"RELEASE SAVEPOINT {savepoint}")
+                else:
+                    cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            except Exception:
+                cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                raise
+        else:
+            try:
+                yield cursor
+                if commit:
+                    conn.commit()
+                else:
+                    if conn.in_transaction:
+                        conn.rollback()
+            except Exception:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
     finally:
-        conn.close()
+        _local.depth -= 1
+        cursor.close()
 
 def init_db():
     with get_cursor(commit=True) as cursor:
@@ -136,6 +167,7 @@ def get_status() -> str:
     if _status_cache is not None:
         return _status_cache
 
+    # Optimized to use the thread-local connection pool via get_cursor
     with get_cursor() as cursor:
         cursor.execute("SELECT value FROM settings WHERE key = 'status'")
         row = cursor.fetchone()
