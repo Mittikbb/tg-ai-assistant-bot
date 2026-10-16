@@ -1,22 +1,46 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+_local = threading.local()
+
+def get_connection():
+    if not hasattr(_local, "conn"):
+        _local.conn = sqlite3.connect(DB_NAME, timeout=15.0, isolation_level=None)
+        _local.conn.execute("PRAGMA journal_mode=WAL;")
+        _local.conn.execute("PRAGMA busy_timeout=5000;")
+    return _local.conn
+
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = get_connection()
     cursor = conn.cursor()
+
+    if getattr(_local, "sp_level", 0) == 0:
+        _local.sp_level = 0
+
+    sp_name = f"sp_{_local.sp_level}"
+    _local.sp_level += 1
+
+    cursor.execute(f"SAVEPOINT {sp_name}")
     try:
         yield cursor
         if commit:
-            conn.commit()
+            cursor.execute(f"RELEASE SAVEPOINT {sp_name}")
+        else:
+            cursor.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+            cursor.execute(f"RELEASE SAVEPOINT {sp_name}")
+    except Exception:
+        cursor.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+        cursor.execute(f"RELEASE SAVEPOINT {sp_name}")
+        raise
     finally:
-        conn.close()
+        _local.sp_level -= 1
+        cursor.close()
 
 def init_db():
     with get_cursor(commit=True) as cursor:
