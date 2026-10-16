@@ -43,6 +43,8 @@ PUBLIC_URL = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or f"h
 user_last_manual_msg = {}
 PAUSE_TIMEOUT = 600  # 10 минут (в секундах)
 
+background_tasks = set()
+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -655,18 +657,23 @@ async def handle_business_message(message: types.Message):
         if text.startswith("~"):
             clean_text = text[1:].strip()
             if clean_text:
-                try:
-                    cute_text = await make_cute_text(clean_text)
-                    if cute_text:
-                        await bot.edit_message_text(
-                            text=cute_text,
-                            chat_id=chat_id,
-                            message_id=message.message_id,
-                            business_connection_id=message.business_connection_id,
-                            parse_mode=None
-                        )
-                except Exception as e:
-                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+                async def process_cute_text_task():
+                    try:
+                        cute_text = await make_cute_text(clean_text)
+                        if cute_text:
+                            await bot.edit_message_text(
+                                text=cute_text,
+                                chat_id=chat_id,
+                                message_id=message.message_id,
+                                business_connection_id=message.business_connection_id,
+                                parse_mode=None
+                            )
+                    except Exception as e:
+                        logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+
+                task = asyncio.create_task(process_cute_text_task())
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
         # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
         if not was_paused:
