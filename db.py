@@ -1,22 +1,44 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 DB_NAME = "business_bot.db"
+_local = threading.local()
+
+def _get_connection():
+    if not hasattr(_local, "connection"):
+        conn = sqlite3.connect(DB_NAME, timeout=15.0, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+        _local.connection = conn
+        _local.depth = 0
+    return _local.connection
 
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = _get_connection()
+    _local.depth += 1
+    savepoint_name = f"sp_{_local.depth}"
+
     cursor = conn.cursor()
+    cursor.execute(f"SAVEPOINT {savepoint_name};")
     try:
         yield cursor
+
         if commit:
-            conn.commit()
+            cursor.execute(f"RELEASE SAVEPOINT {savepoint_name};")
+        else:
+            cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
+            cursor.execute(f"RELEASE SAVEPOINT {savepoint_name};")
+    except Exception:
+        cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
+        cursor.execute(f"RELEASE SAVEPOINT {savepoint_name};")
+        raise
     finally:
-        conn.close()
+        _local.depth -= 1
+        cursor.close()
 
 def init_db():
     with get_cursor(commit=True) as cursor:
@@ -136,9 +158,12 @@ def get_status() -> str:
     if _status_cache is not None:
         return _status_cache
 
-    with get_cursor() as cursor:
-        cursor.execute("SELECT value FROM settings WHERE key = 'status'")
-        row = cursor.fetchone()
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'status'")
+    row = cursor.fetchone()
+    cursor.close()
+
     _status_cache = row[0] if row else "default"
     return _status_cache
 
