@@ -1,22 +1,51 @@
 import sqlite3
+import threading
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+_local = threading.local()
+
+def _get_connection():
+    if not hasattr(_local, "conn"):
+        _local.conn = sqlite3.connect(DB_NAME, timeout=15.0, isolation_level=None)
+        _local.conn.execute("PRAGMA journal_mode=WAL;")
+        _local.conn.execute("PRAGMA busy_timeout=5000;")
+    return _local.conn
+
+from functools import wraps
+
+def with_cursor(commit: bool = False):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            with get_cursor(commit=commit) as cursor:
+                return func(cursor, *args, **kwargs)
+        return wrapper
+    return decorator
+
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = _get_connection()
+    sp = f"sp_{uuid.uuid4().hex}"
+    conn.execute(f"SAVEPOINT {sp}")
     cursor = conn.cursor()
     try:
         yield cursor
         if commit:
-            conn.commit()
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
+        else:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+        conn.execute(f"RELEASE SAVEPOINT {sp}")
+        raise
     finally:
-        conn.close()
+        cursor.close()
 
 def init_db():
     with get_cursor(commit=True) as cursor:
@@ -131,80 +160,80 @@ _status_cache = None
 # ФУНКЦИИ БИЗНЕС-АССИСТЕНТА
 # ==============================================================================
 
-def get_status() -> str:
+@with_cursor(commit=False)
+def get_status(cursor) -> str:
     global _status_cache
     if _status_cache is not None:
         return _status_cache
 
-    with get_cursor() as cursor:
-        cursor.execute("SELECT value FROM settings WHERE key = 'status'")
-        row = cursor.fetchone()
+    cursor.execute("SELECT value FROM settings WHERE key = 'status'")
+    row = cursor.fetchone()
     _status_cache = row[0] if row else "default"
     return _status_cache
 
-def set_status(status_name: str):
+@with_cursor(commit=True)
+def set_status(cursor, status_name: str):
     global _status_cache
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
+    cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
     _status_cache = status_name
 
-def is_blacklisted(user_id: int) -> bool:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT user_id FROM blacklist WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+@with_cursor(commit=False)
+def is_blacklisted(cursor, user_id: int) -> bool:
+    cursor.execute("SELECT user_id FROM blacklist WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
     return row is not None
 
-def add_to_blacklist(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)", (user_id,))
+@with_cursor(commit=True)
+def add_to_blacklist(cursor, user_id: int):
+    cursor.execute("INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)", (user_id,))
 
-def remove_from_blacklist(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
+@with_cursor(commit=True)
+def remove_from_blacklist(cursor, user_id: int):
+    cursor.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
 
-def is_aggressive(user_id: int) -> bool:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT user_id FROM aggressive_users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+@with_cursor(commit=False)
+def is_aggressive(cursor, user_id: int) -> bool:
+    cursor.execute("SELECT user_id FROM aggressive_users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
     return row is not None
 
-def add_to_aggressive(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR IGNORE INTO aggressive_users (user_id) VALUES (?)", (user_id,))
+@with_cursor(commit=True)
+def add_to_aggressive(cursor, user_id: int):
+    cursor.execute("INSERT OR IGNORE INTO aggressive_users (user_id) VALUES (?)", (user_id,))
 
-def remove_from_aggressive(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM aggressive_users WHERE user_id = ?", (user_id,))
+@with_cursor(commit=True)
+def remove_from_aggressive(cursor, user_id: int):
+    cursor.execute("DELETE FROM aggressive_users WHERE user_id = ?", (user_id,))
 
-def is_chat_disabled(chat_id: int) -> bool:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT chat_id FROM disabled_chats WHERE chat_id = ?", (chat_id,))
-        row = cursor.fetchone()
+@with_cursor(commit=False)
+def is_chat_disabled(cursor, chat_id: int) -> bool:
+    cursor.execute("SELECT chat_id FROM disabled_chats WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
     return row is not None
 
-def disable_chat(chat_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR IGNORE INTO disabled_chats (chat_id) VALUES (?)", (chat_id,))
+@with_cursor(commit=True)
+def disable_chat(cursor, chat_id: int):
+    cursor.execute("INSERT OR IGNORE INTO disabled_chats (chat_id) VALUES (?)", (chat_id,))
 
-def enable_chat(chat_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM disabled_chats WHERE chat_id = ?", (chat_id,))
+@with_cursor(commit=True)
+def enable_chat(cursor, chat_id: int):
+    cursor.execute("DELETE FROM disabled_chats WHERE chat_id = ?", (chat_id,))
 
-def save_night_message(sender_name: str, text: str):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT INTO night_logs (sender_name, message_text) VALUES (?, ?)", (sender_name, text))
+@with_cursor(commit=True)
+def save_night_message(cursor, sender_name: str, text: str):
+    cursor.execute("INSERT INTO night_logs (sender_name, message_text) VALUES (?, ?)", (sender_name, text))
 
-def pop_night_messages() -> list:
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("SELECT sender_name, message_text FROM night_logs")
-        rows = cursor.fetchall()
-        cursor.execute("DELETE FROM night_logs")
+@with_cursor(commit=True)
+def pop_night_messages(cursor) -> list:
+    cursor.execute("SELECT sender_name, message_text FROM night_logs")
+    rows = cursor.fetchall()
+    cursor.execute("DELETE FROM night_logs")
     return rows
 
-def get_user_profile(user_id: int) -> str:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT notes FROM users_profiles WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+@with_cursor(commit=False)
+def get_user_profile(cursor, user_id: int) -> str:
+    cursor.execute("SELECT notes FROM users_profiles WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
     return row[0] if row and row[0] else ""
 
 def update_user_profile(user_id: int, user_name: str, new_note: str):
@@ -217,9 +246,9 @@ def update_user_profile(user_id: int, user_name: str, new_note: str):
                 notes = excluded.notes
         """, (user_id, user_name, new_note))
 
-def log_stat(user_id: int, category: str):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT INTO stats_log (user_id, category) VALUES (?, ?)", (user_id, category))
+@with_cursor(commit=True)
+def log_stat(cursor, user_id: int, category: str):
+    cursor.execute("INSERT INTO stats_log (user_id, category) VALUES (?, ?)", (user_id, category))
 
 ACTIVITY_KEEP = 500
 
@@ -254,9 +283,9 @@ def get_activity_today_counts() -> dict:
         cursor.execute("SELECT kind, COUNT(*) FROM ai_activity WHERE created_at >= ? GROUP BY kind", (since,))
         return dict(cursor.fetchall())
 
-def clear_activity():
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM ai_activity")
+@with_cursor(commit=True)
+def clear_activity(cursor):
+    cursor.execute("DELETE FROM ai_activity")
 
 def get_setting(key: str) -> Optional[str]:
     with get_cursor() as cursor:
