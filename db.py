@@ -1,22 +1,38 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 DB_NAME = "business_bot.db"
+_local = threading.local()
+
+def _get_connection():
+    if not hasattr(_local, "conn") or getattr(_local, "conn") is None:
+        _local.conn = sqlite3.connect(DB_NAME, timeout=15.0, isolation_level=None)
+        _local.conn.execute("PRAGMA journal_mode=WAL;")
+        _local.conn.execute("PRAGMA busy_timeout=5000;")
+    return _local.conn
 
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = _get_connection()
     cursor = conn.cursor()
+    savepoint_name = f"sp_{id(cursor)}"
+    cursor.execute(f"SAVEPOINT {savepoint_name}")
     try:
         yield cursor
         if commit:
-            conn.commit()
+            cursor.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        else:
+            cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            cursor.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+    except BaseException:
+        cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        cursor.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        raise
     finally:
-        conn.close()
+        cursor.close()
 
 def init_db():
     with get_cursor(commit=True) as cursor:
@@ -125,28 +141,19 @@ def init_db():
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_cat ON notes(user_id, category, is_archived)")
 
-_status_cache = None
-
 # ==============================================================================
 # ФУНКЦИИ БИЗНЕС-АССИСТЕНТА
 # ==============================================================================
 
 def get_status() -> str:
-    global _status_cache
-    if _status_cache is not None:
-        return _status_cache
-
     with get_cursor() as cursor:
         cursor.execute("SELECT value FROM settings WHERE key = 'status'")
         row = cursor.fetchone()
-    _status_cache = row[0] if row else "default"
-    return _status_cache
+    return row[0] if row else "default"
 
 def set_status(status_name: str):
-    global _status_cache
     with get_cursor(commit=True) as cursor:
         cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
-    _status_cache = status_name
 
 def is_blacklisted(user_id: int) -> bool:
     with get_cursor() as cursor:
