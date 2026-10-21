@@ -1,22 +1,38 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+_local = threading.local()
+
+def _get_connection():
+    if getattr(_local, "conn", None) is None:
+        _local.conn = sqlite3.connect(DB_NAME, timeout=15.0, isolation_level=None)
+        _local.conn.execute("PRAGMA journal_mode=WAL;")
+        _local.conn.execute("PRAGMA busy_timeout=5000;")
+        _local.sp_level = 0
+    return _local.conn
+
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = _get_connection()
+    _local.sp_level += 1
+    sp_name = f"sp_{_local.sp_level}"
+    conn.execute(f"SAVEPOINT {sp_name}")
     cursor = conn.cursor()
     try:
         yield cursor
-        if commit:
-            conn.commit()
+        if not commit:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+        raise
     finally:
-        conn.close()
+        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+        _local.sp_level -= 1
 
 def init_db():
     with get_cursor(commit=True) as cursor:
@@ -136,9 +152,11 @@ def get_status() -> str:
     if _status_cache is not None:
         return _status_cache
 
-    with get_cursor() as cursor:
-        cursor.execute("SELECT value FROM settings WHERE key = 'status'")
-        row = cursor.fetchone()
+    conn = _get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'status'")
+    row = cursor.fetchone()
+
     _status_cache = row[0] if row else "default"
     return _status_cache
 
