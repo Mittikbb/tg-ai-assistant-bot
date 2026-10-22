@@ -5,18 +5,35 @@ from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+import threading
+
+_thread_local = threading.local()
+
+def _get_connection():
+    if not hasattr(_thread_local, 'conn'):
+        conn = sqlite3.connect(DB_NAME, timeout=15.0, isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+        _thread_local.conn = conn
+        _thread_local.savepoint_counter = 0
+    return _thread_local.conn
+
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = _get_connection()
+    _thread_local.savepoint_counter += 1
+    sp_name = f"sp_{_thread_local.savepoint_counter}"
+    conn.execute(f"SAVEPOINT {sp_name}")
     cursor = conn.cursor()
     try:
         yield cursor
-        if commit:
-            conn.commit()
+        if not commit:
+            conn.execute(f"ROLLBACK TO {sp_name}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO {sp_name}")
+        raise
     finally:
-        conn.close()
+        conn.execute(f"RELEASE {sp_name}")
 
 def init_db():
     with get_cursor(commit=True) as cursor:
@@ -141,6 +158,7 @@ def get_status() -> str:
         row = cursor.fetchone()
     _status_cache = row[0] if row else "default"
     return _status_cache
+
 
 def set_status(status_name: str):
     global _status_cache
