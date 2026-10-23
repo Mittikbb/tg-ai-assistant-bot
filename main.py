@@ -42,6 +42,7 @@ PUBLIC_URL = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or f"h
 
 user_last_manual_msg = {}
 PAUSE_TIMEOUT = 600  # 10 минут (в секундах)
+background_tasks = set()
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -647,6 +648,20 @@ async def handle_business_message(message: types.Message):
     last_msg_time = user_last_manual_msg.get(chat_id, 0)
     was_paused = (time.time() - last_msg_time < PAUSE_TIMEOUT)
 
+    async def _edit_cute_text(text_to_format, c_id, m_id, b_id):
+        try:
+            cute_text = await make_cute_text(text_to_format)
+            if cute_text:
+                await bot.edit_message_text(
+                    text=cute_text,
+                    chat_id=c_id,
+                    message_id=m_id,
+                    business_connection_id=b_id,
+                    parse_mode=None
+                )
+        except Exception as e:
+            logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+
     # 1. Если сообщение отправлено ТОБОЙ (пишешь сам вручную)
     if sender_id == MY_ID:
         user_last_manual_msg[chat_id] = time.time()
@@ -655,18 +670,11 @@ async def handle_business_message(message: types.Message):
         if text.startswith("~"):
             clean_text = text[1:].strip()
             if clean_text:
-                try:
-                    cute_text = await make_cute_text(clean_text)
-                    if cute_text:
-                        await bot.edit_message_text(
-                            text=cute_text,
-                            chat_id=chat_id,
-                            message_id=message.message_id,
-                            business_connection_id=message.business_connection_id,
-                            parse_mode=None
-                        )
-                except Exception as e:
-                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+                task = asyncio.create_task(
+                    _edit_cute_text(clean_text, chat_id, message.message_id, message.business_connection_id)
+                )
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
         # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
         if not was_paused:
