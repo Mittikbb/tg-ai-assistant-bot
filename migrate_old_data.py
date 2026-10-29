@@ -13,7 +13,7 @@
 из /panel продолжит работать). Чёрный список, досье и отключённые чаты API не отдаёт.
 """
 import argparse
-import asyncio
+
 import json
 import os
 import sqlite3
@@ -22,6 +22,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -127,23 +128,51 @@ def build_backup(data: dict, token: str, owner_id: int, path: str) -> dict:
     return counts
 
 
-async def send_and_pin(path: str, filename: str, bot_token: str, owner_id: int, summary: str):
-    from aiogram import Bot
-    from aiogram.types import FSInputFile
-
-    bot = Bot(token=bot_token)
+def tg_call(bot_token: str, method: str, fields: dict, file_field: str = None, file_path: str = None, filename: str = None) -> dict:
+    """Вызов Bot API через urllib — он, в отличие от aiogram, сам берёт прокси из HTTPS_PROXY / настроек Windows"""
+    boundary = uuid.uuid4().hex
+    body = b""
+    for key, value in fields.items():
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n").encode("utf-8")
+    if file_field:
+        with open(file_path, "rb") as f:
+            content = f.read()
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; filename=\"{filename}\"\r\n"
+                 f"Content-Type: application/octet-stream\r\n\r\n").encode("utf-8") + content + b"\r\n"
+    body += f"--{boundary}--\r\n".encode("utf-8")
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    if fields or file_field:
+        request = urllib.request.Request(url, data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    else:
+        request = urllib.request.Request(url)  # пустую multipart-форму Telegram отклоняет с 400
     try:
-        me = await bot.get_me()
-        print(f"🤖 Бот из .env: @{me.username}. Это должен быть тот же бот, что работает на Render.")
-        sent = await bot.send_document(
-            owner_id,
-            FSInputFile(path, filename=filename),
-            caption=f"💾 Бэкап базы · перенос со старой версии\n{summary}\nНе открепляй — новая версия восстановится из этого файла.",
-            disable_notification=True
-        )
-        await bot.pin_chat_message(owner_id, sent.message_id, disable_notification=True)
-    finally:
-        await bot.session.close()
+        with urllib.request.urlopen(request, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            result = json.loads(raw)
+        except ValueError:
+            result = {"description": f"HTTP {e.code}"}
+    except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+        sys.exit(f"⚠️ Не удалось связаться с Telegram: {getattr(e, 'reason', e)}. Проверь VPN/прокси "
+                 "или пришли сохранённый файл боту вручную после деплоя.")
+    if not result.get("ok"):
+        sys.exit(f"⚠️ Telegram ответил ошибкой в {method}: {result.get('description')}")
+    return result["result"]
+
+
+def send_and_pin(path: str, filename: str, bot_token: str, owner_id: int, summary: str):
+    me = tg_call(bot_token, "getMe", {})
+    print(f"🤖 Бот из .env: @{me.get('username')}. Это должен быть тот же бот, что работает на Render.")
+    sent = tg_call(bot_token, "sendDocument", {
+        "chat_id": owner_id,
+        "caption": f"💾 Бэкап базы · перенос со старой версии\n{summary}\nНе открепляй — новая версия восстановится из этого файла.",
+        "disable_notification": "true",
+    }, file_field="document", file_path=path, filename=filename)
+    tg_call(bot_token, "pinChatMessage", {
+        "chat_id": owner_id, "message_id": sent["message_id"], "disable_notification": "true"
+    })
 
 
 def main():
@@ -179,7 +208,8 @@ def main():
         return
     if not bot_token or not owner_id:
         sys.exit("⚠️ В .env нет BOT_TOKEN или MY_TELEGRAM_ID — не могу отправить файл. Пришли его боту вручную после деплоя.")
-    asyncio.run(send_and_pin(path, filename, bot_token, owner_id, summary))
+    print("📤 Отправляю файл в Telegram …")
+    send_and_pin(path, filename, bot_token, owner_id, summary)
     print("📌 Файл отправлен тебе в чат с ботом и закреплён. Теперь можно деплоить — новая версия восстановится из него сама.")
 
 
