@@ -122,6 +122,12 @@ class OwnerOnlyMiddleware(BaseMiddleware):
         # Служебные сообщения (например, «бот закрепил файл» после автобэкапа) и сообщения ботов
         # не от человека — молча пропускаем, иначе бот ответит отказом сам себе
         if (user and user.is_bot) or (isinstance(event, Message) and event.pinned_message):
+            # «Бот закрепил файл» после каждого бэкапа — только мусор в чате, убираем
+            if isinstance(event, Message) and event.pinned_message and user and user.id == event.bot.id:
+                try:
+                    await event.delete()
+                except Exception:
+                    pass
             return None
         if isinstance(event, Message) and event.chat.type == "private":
             await event.answer(
@@ -392,13 +398,16 @@ async def reminder_worker(bot_instance: Bot):
 # ==============================================================================
 
 BACKUP_CHAT_ID = int(os.getenv("BACKUP_CHAT_ID", 0) or 0) or MY_ID
-BACKUP_INTERVAL = 600        # раз в 10 минут, и только если в базе что-то изменилось
+BACKUP_INTERVAL = 600        # раз в 10 минут — если изменились заметки, напоминания, настройки и т.п.
+MINOR_BACKUP_INTERVAL = 6 * 3600  # история переписки, лента ИИ, досье — не чаще раза в 6 часов
 BACKUP_PREFIX = "business_bot_backup"
 RESTORE_RETRIES = 10         # попыток восстановиться при старте (по одной в минуту)
 
 backup_state = {
     "allowed": False,        # пока не восстановились — не перезаписываем хорошую копию пустой базой
     "last_hash": None,
+    "last_important_hash": None,
+    "last_sent_at": time.time(),
     "msg_ids": [],           # последние сообщения с бэкапами (храним две)
     "restore_attempts": 0,
 }
@@ -429,18 +438,22 @@ async def restore_from_file_id(file_id: str):
         await asyncio.to_thread(db.restore_from, tmp)
     finally:
         remove_quietly(tmp)
-    backup_state["last_hash"] = await asyncio.to_thread(db.content_hash)
+    backup_state["last_hash"], backup_state["last_important_hash"] = await asyncio.to_thread(db.content_hashes)
 
-async def make_backup(reason: str, force: bool = False) -> Optional[Message]:
-    """Шлёт копию базы в чат бэкапов и закрепляет её. None — если бэкап не нужен или запрещён"""
+async def make_backup(reason: str, force: bool = False, important_only: bool = False) -> Optional[Message]:
+    """Шлёт копию базы в чат бэкапов и закрепляет её. None — если бэкап не нужен или запрещён.
+    important_only — слать, только если изменилось что-то кроме «шумных» таблиц (db.NOISY_TABLES)"""
     if not BACKUP_CHAT_ID:
         return None
     async with backup_lock:
         if not backup_state["allowed"]:
             return None
-        current_hash = await asyncio.to_thread(db.content_hash)
-        if not force and current_hash == backup_state["last_hash"]:
-            return None
+        current_hash, important_hash = await asyncio.to_thread(db.content_hashes)
+        if not force:
+            if important_only and important_hash == backup_state["last_important_hash"]:
+                return None
+            if current_hash == backup_state["last_hash"]:
+                return None
 
         tmp = f"temp_backup_{secrets.token_hex(4)}.db"
         try:
@@ -461,6 +474,8 @@ async def make_backup(reason: str, force: bool = False) -> Optional[Message]:
 
         await bot.pin_chat_message(BACKUP_CHAT_ID, sent.message_id, disable_notification=True)
         backup_state["last_hash"] = current_hash
+        backup_state["last_important_hash"] = important_hash
+        backup_state["last_sent_at"] = time.time()
 
         # Держим две копии: свежую (закреплена) и предыдущую на всякий случай, остальные удаляем
         ids = backup_state["msg_ids"] + [sent.message_id]
@@ -541,7 +556,11 @@ async def backup_worker():
                 continue
             if time.time() - last_backup >= BACKUP_INTERVAL:
                 last_backup = time.time()
-                await make_backup("Автобэкап")
+                sent = await make_backup("Автобэкап", important_only=True)
+                # Мелкие изменения (история чатов, лента ИИ, досье) сохраняем не чаще раза в 6 часов;
+                # перед деплоем/перезапуском они всё равно уходят бэкапом при выключении
+                if not sent and time.time() - backup_state["last_sent_at"] >= MINOR_BACKUP_INTERVAL:
+                    await make_backup("Автобэкап истории переписки")
         except Exception as e:
             logging.error(f"Ошибка в цикле backup_worker: {e}")
 

@@ -776,16 +776,27 @@ def snapshot_to(path: str):
         dst.close()
         src.close()
 
-def content_hash() -> str:
-    """Хэш содержимого (а не байтов файла) — чтобы не слать бэкап, если ничего не менялось"""
-    h = hashlib.sha256()
+# Таблицы, которые меняются почти с каждым сообщением в чатах. Ради них одних бэкап
+# каждые 10 минут не шлём — они сохраняются реже (см. backup_worker в main.py)
+NOISY_TABLES = ("chat_history", "ai_activity", "stats_log", "users_profiles", "known_chats", "drafts", "sqlite_sequence")
+
+def content_hashes() -> tuple:
+    """(хэш всего содержимого, хэш без «шумных» таблиц) — по содержимому, а не по байтам файла"""
+    full, important = hashlib.sha256(), hashlib.sha256()
+    noisy_prefixes = tuple(f'INSERT INTO "{t}"' for t in NOISY_TABLES)
     conn = sqlite3.connect(DB_NAME, timeout=15.0)
     try:
         for line in conn.iterdump():
-            h.update(line.encode("utf-8"))
+            data = line.encode("utf-8")
+            full.update(data)
+            if not line.startswith(noisy_prefixes):
+                important.update(data)
     finally:
         conn.close()
-    return h.hexdigest()
+    return full.hexdigest(), important.hexdigest()
+
+def content_hash() -> str:
+    return content_hashes()[0]
 
 def validate_backup(path: str) -> bool:
     try:
