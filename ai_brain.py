@@ -33,8 +33,12 @@ BASE_SYSTEM_PROMPT = """
   "category": "formal" | "tech_vpn" | "urgent" | "personal",
   "summary": "Краткое описание сути сообщения, подробный разбор изображения/скриншота или расшифровка голосового сообщения (на русском)",
   "user_profile": "Обновленное короткое досье о человеке (1-2 предложения: кто он, о чем пишет, важные факты)",
-  "suggested_reply": "Текст ответа от имени ассистента (или null, если category=='personal')"
+  "suggested_reply": "Текст ответа от имени ассистента (или null, если category=='personal')",
+  "tone_warning": true | false
 }
+
+ПРАВИЛА ДЛЯ tone_warning:
+- Поставь true, если собеседник грубит, матерится, предъявляет претензии, пишет сплошным КАПСОМ, наезжает, проявляет агрессию или токсичность. В остальных случаях строго false.
 
 ПРАВИЛА КАТЕГОРИЗАЦИИ:
 1. "personal" — Выбирай ТОЛЬКО если сообщение содержит глубоко личные темы, семейные вопросы, конфиденциальные секреты, флирт или интимные обсуждения.
@@ -69,7 +73,19 @@ AGGRESSIVE_REPLY_INSTRUCTION = """
 
 CUTE_STYLE_PROMPT = """
 Ты — ультра-милый, гипер-эмоциональный кавайный стилизатор текста (аниме-девочка / маскот).
-Твоя задача — взять исходный текст пользователя и переписать его в эстетичном, няшном, слегка застенчивом и эмоциональном стиле.
+Твоя задача — взять исходный текст пользователя и ПЕРЕПИСАТЬ его в эстетичном, няшном, слегка застенчивом и эмоциональном стиле.
+
+ГЛАВНОЕ ПРАВИЛО — ТЫ РЕДАКТОР, А НЕ СОБЕСЕДНИК:
+- Исходный текст — это сообщение, которое пользователь САМ отправляет своему собеседнику. Оно адресовано НЕ тебе.
+- НИКОГДА не отвечай на исходный текст и не продолжай диалог. Ты только меняешь стиль уже написанной фразы.
+- Пиши от того же лица, что и исходник (если там «я» — остаётся «я»; если вопрос — остаётся тот же вопрос).
+- НЕ добавляй новых мыслей, фактов, вопросов, приветствий или реплик, которых нет в исходнике.
+- Длина результата — примерно как исходник плюс украшения (каомодзи, запинки, действия в звёздочках), не длиннее 2-3 раз.
+
+  Пример:
+  * Исходник: «привет, мы знакомы?»
+    ПРАВИЛЬНО: «П-приветик!.. *робко машет лапкой* ૮₍ ˶• ˕ •˶ ₎ა М-мы ведь з-знакомы, да?.. 🌸»
+    НЕПРАВИЛЬНО (это ответ, а не переписанное сообщение): «Ой, как я рада тебя видеть! Расскажи, как твои дела?»
 
 ПРАВИЛА И СТИЛЬ:
 1. Смысл: Полностью сохраняй суть и посыл исходного сообщения, но оборачивай его в тонны кавая и эмоций.
@@ -95,24 +111,110 @@ async def make_cute_text(text: str) -> str:
     """Переписывает отправленное сообщение в милый/няшный стиль (для ~текст)"""
     if not text or not ai_client:
         return text
+    # Явно помечаем исходник, чтобы модель не воспринимала его как реплику к себе
+    prompt = (
+        "Перепиши в кавайном стиле сообщение ниже. Не отвечай на него — верни только переписанный вариант.\n"
+        f"<<<\n{text}\n>>>"
+    )
     for model_name in MODELS_TO_TRY:
         try:
             response = await ai_client.aio.models.generate_content(
                 model=model_name,
-                contents=[text],
+                contents=[prompt],
                 config=types.GenerateContentConfig(
                     system_instruction=CUTE_STYLE_PROMPT,
                     temperature=0.8
                 )
             )
-            result = response.text.strip()
+            result = (response.text or "").strip()
+            # Модель иногда повторяет маркеры-ограничители — убираем только их (не трогая каомодзи вроде >w<)
+            if result.startswith("<<<"):
+                result = result[3:]
+            if result.endswith(">>>"):
+                result = result[:-3]
+            result = result.strip()
             if result:
-                return result
+                return result[:4096]
         except Exception as e:
             logging.warning(f"Ошибка make_cute_text ({model_name}): {e}")
     return text
 
-async def analyze_message(text: str = "", photo_path: str = None, voice_path: str = None, user_profile: str = "", is_aggressive: bool = False) -> dict:
+# ==============================================================================
+# ИСТОРИЯ ПЕРЕПИСКИ, ЧЕРНОВИКИ В СТИЛЕ ВЛАДЕЛЬЦА, СВОДКА ПО ЧАТУ
+# ==============================================================================
+
+HISTORY_ROLE_NAMES = {
+    "them": "Собеседник",
+    "me": "Владелец",
+    "bot": "ИИ-Ассистент"
+}
+
+def format_chat_history(history: list, title: str = "ИСТОРИЯ ПЕРЕПИСКИ") -> str:
+    lines = [f"{HISTORY_ROLE_NAMES.get(h['role'], h['role'])}: {h['text']}" for h in history]
+    return f"[{title} — от старых к новым]:\n" + "\n".join(lines)
+
+async def generate_text(system_prompt: str, contents: list, temperature: float, label: str) -> Optional[str]:
+    if not ai_client:
+        return None
+    for model_name in MODELS_TO_TRY:
+        try:
+            response = await ai_client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(system_instruction=system_prompt, temperature=temperature)
+            )
+            result = (response.text or "").strip()
+            if result:
+                return result
+        except Exception as e:
+            logging.warning(f"Ошибка {label} ({model_name}): {e}")
+    return None
+
+DRAFT_SYSTEM_PROMPT = """
+Ты пишешь черновик ответа ОТ ЛИЦА ВЛАДЕЛЬЦА Telegram-аккаунта его собеседнику. Владелец прочитает черновик и сам решит, отправлять ли его.
+
+ПРАВИЛА:
+- Пиши от первого лица, как будто это пишет сам владелец. Никаких «[ИИ-Ассистент]», подписей и пояснений.
+- Ответь на последнее сообщение собеседника с учётом истории переписки.
+- Если даны [ПРИМЕРЫ СООБЩЕНИЙ ВЛАДЕЛЬЦА] — копируй его манеру: длину фраз, регистр (с большой буквы или нет), пунктуацию, сленг, смайлики, обращения. Если он пишет коротко и без точек — пиши так же.
+- Образцы показывают МАНЕРУ, а не готовые ответы: не копируй их дословно, отвечай по смыслу именно на это сообщение.
+- Не выдумывай факты о планах и жизни владельца. Если без них не ответить — ответь нейтрально или задай уточняющий вопрос.
+- Выводи ТОЛЬКО текст сообщения, без кавычек и Markdown.
+"""
+
+async def make_draft_reply(incoming: str, history: Optional[list] = None, style_samples: Optional[list] = None,
+                           user_profile: str = "", previous_draft: str = "") -> Optional[str]:
+    """Черновик ответа на личное сообщение в стиле владельца"""
+    contents = []
+    if style_samples:
+        contents.append("[ПРИМЕРЫ СООБЩЕНИЙ ВЛАДЕЛЬЦА — так он обычно пишет]:\n" + "\n".join(f"- {s}" for s in style_samples))
+    if user_profile:
+        contents.append(f"[КТО СОБЕСЕДНИК]: {user_profile}")
+    if history:
+        contents.append(format_chat_history(history))
+    contents.append(f"[ПОСЛЕДНЕЕ СООБЩЕНИЕ СОБЕСЕДНИКА]: {incoming or '[медиа без текста]'}")
+    if previous_draft:
+        contents.append(f"[ПРЕДЫДУЩИЙ ЧЕРНОВИК, НЕ ПОДОШЁЛ — предложи другой вариант]: {previous_draft}")
+    result = await generate_text(DRAFT_SYSTEM_PROMPT, contents, 0.9 if previous_draft else 0.7, "make_draft_reply")
+    return result[:4000] if result else None
+
+SUMMARY_SYSTEM_PROMPT = """
+Ты делаешь для владельца Telegram-аккаунта короткую сводку переписки с одним собеседником: «что я пропустил».
+
+ФОРМАТ (обычный текст, без Markdown, по-русски):
+- 2–5 пунктов, каждый с новой строки и начинается с «• »: о чём шла речь, что хотят от владельца, договорённости.
+- Последней строкой «👉 Нужно: ...» — что владельцу стоит сделать или ответить. Если ничего — «👉 Ничего не требуется».
+Будь краток и конкретен, не пересказывай каждое сообщение.
+"""
+
+async def summarize_chat(history: list, chat_name: str = "") -> Optional[str]:
+    if not history:
+        return None
+    contents = [format_chat_history(history, f"ПЕРЕПИСКА С {chat_name or 'СОБЕСЕДНИКОМ'}")]
+    result = await generate_text(SUMMARY_SYSTEM_PROMPT, contents, 0.3, "summarize_chat")
+    return result[:3500] if result else None
+
+async def analyze_message(text: str = "", photo_path: str = None, voice_path: str = None, user_profile: str = "", is_aggressive: bool = False, history: Optional[list] = None) -> dict:
     """Анализирует входящие сообщения клиентов/собеседников в Telegram Business"""
     if not ai_client:
         return {
@@ -128,8 +230,11 @@ async def analyze_message(text: str = "", photo_path: str = None, voice_path: st
     if user_profile:
         contents.append(f"[ТЕКУЩЕЕ ДОСЬЕ ПОЛЬЗОВАТЕЛЯ]: {user_profile}")
 
+    if history:
+        contents.append(format_chat_history(history) + "\n(Используй историю только для контекста, отвечай на НОВОЕ сообщение.)")
+
     if text:
-        contents.append(text)
+        contents.append(f"[НОВОЕ СООБЩЕНИЕ]: {text}" if history else text)
 
     if photo_path and os.path.exists(photo_path):
         with open(photo_path, "rb") as f:
@@ -154,7 +259,12 @@ async def analyze_message(text: str = "", photo_path: str = None, voice_path: st
                     response_mime_type="application/json"
                 )
             )
-            return json.loads(response.text)
+            result = json.loads(response.text)
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                result = result[0]
+            if isinstance(result, dict):
+                return result
+            raise ValueError(f"Неожиданный формат ответа: {type(result).__name__}")
         except Exception as e:
             logging.warning(f"Ошибка analyze_message ({model_name}): {e}")
 

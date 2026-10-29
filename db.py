@@ -127,6 +127,44 @@ def init_db():
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_cat ON notes(user_id, category, is_archived)")
 
+        # --- История бизнес-чатов (контекст для ИИ, «Мой стиль», «Что я пропустил?») ---
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_chat ON chat_history(chat_id, id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_role ON chat_history(role, id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS known_chats (
+                chat_id INTEGER PRIMARY KEY,
+                name TEXT,
+                username TEXT,
+                business_connection_id TEXT,
+                updated_at TEXT
+            )
+        """)
+
+        # Черновики ответов на личные сообщения (кнопка «Отправить»)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS drafts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                business_connection_id TEXT NOT NULL,
+                incoming TEXT,
+                text TEXT NOT NULL,
+                owner_msg_id INTEGER,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_drafts_owner_msg ON drafts(owner_msg_id)")
+
 _status_cache = None
 
 # ==============================================================================
@@ -550,6 +588,109 @@ def get_all_notes(limit: int = 100):
             }
             for r in rows
         ]
+
+# --- История бизнес-чатов ---
+CHAT_HISTORY_KEEP = 40  # на чат; хватает и для контекста, и для сводки «что я пропустил»
+
+def _utc_now_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+def add_chat_message(chat_id: int, role: str, text: str):
+    """role: 'them' — собеседник, 'me' — владелец (вручную или черновиком), 'bot' — автоответ ИИ"""
+    if not text:
+        return
+    with get_cursor(commit=True) as cursor:
+        cursor.execute(
+            "INSERT INTO chat_history (chat_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+            (chat_id, role, text[:2000], _utc_now_str())
+        )
+        cursor.execute("""
+            DELETE FROM chat_history
+            WHERE chat_id = ? AND id NOT IN (
+                SELECT id FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?
+            )
+        """, (chat_id, chat_id, CHAT_HISTORY_KEEP))
+
+def get_chat_history(chat_id: int, limit: int = 10) -> list:
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT role, text, created_at FROM chat_history
+            WHERE chat_id = ? ORDER BY id DESC LIMIT ?
+        """, (chat_id, limit))
+        rows = cursor.fetchall()
+    return [{"role": r[0], "text": r[1], "created_at": r[2]} for r in reversed(rows)]
+
+def get_owner_style_samples(limit: int = 30) -> list:
+    """Последние ручные сообщения владельца из всех чатов — образцы его стиля"""
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT text FROM chat_history
+            WHERE role = 'me' AND length(text) BETWEEN 2 AND 400
+            ORDER BY id DESC LIMIT ?
+        """, (limit,))
+        return [r[0] for r in cursor.fetchall()]
+
+def count_owner_style_samples() -> int:
+    with get_cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM chat_history WHERE role = 'me'")
+        return cursor.fetchone()[0]
+
+# --- Известные чаты ---
+def upsert_known_chat(chat_id: int, name: str, username: Optional[str], business_connection_id: Optional[str]):
+    with get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO known_chats (chat_id, name, username, business_connection_id, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                name = excluded.name,
+                username = excluded.username,
+                business_connection_id = COALESCE(excluded.business_connection_id, known_chats.business_connection_id),
+                updated_at = excluded.updated_at
+        """, (chat_id, name, username, business_connection_id, _utc_now_str()))
+
+def get_known_chat(chat_id: int) -> Optional[dict]:
+    with get_cursor() as cursor:
+        cursor.execute("SELECT chat_id, name, username, business_connection_id FROM known_chats WHERE chat_id = ?", (chat_id,))
+        r = cursor.fetchone()
+    return {"chat_id": r[0], "name": r[1], "username": r[2], "business_connection_id": r[3]} if r else None
+
+# --- Черновики ответов ---
+def add_draft(chat_id: int, business_connection_id: str, incoming: str, text: str) -> int:
+    with get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO drafts (chat_id, business_connection_id, incoming, text, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (chat_id, business_connection_id, incoming, text, _utc_now_str()))
+        return cursor.lastrowid
+
+def get_draft(draft_id: int) -> Optional[dict]:
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, chat_id, business_connection_id, incoming, text, owner_msg_id, status
+            FROM drafts WHERE id = ?
+        """, (draft_id,))
+        r = cursor.fetchone()
+    if not r:
+        return None
+    return {"id": r[0], "chat_id": r[1], "business_connection_id": r[2], "incoming": r[3],
+            "text": r[4], "owner_msg_id": r[5], "status": r[6]}
+
+def get_draft_by_owner_msg(owner_msg_id: int) -> Optional[dict]:
+    with get_cursor() as cursor:
+        cursor.execute("SELECT id FROM drafts WHERE owner_msg_id = ?", (owner_msg_id,))
+        r = cursor.fetchone()
+    return get_draft(r[0]) if r else None
+
+def update_draft(draft_id: int, text: Optional[str] = None, owner_msg_id: Optional[int] = None, status: Optional[str] = None):
+    with get_cursor(commit=True) as cursor:
+        if text is not None:
+            cursor.execute("UPDATE drafts SET text = ? WHERE id = ?", (text, draft_id))
+        if owner_msg_id is not None:
+            cursor.execute("UPDATE drafts SET owner_msg_id = ? WHERE id = ?", (owner_msg_id, draft_id))
+        if status is not None:
+            cursor.execute("UPDATE drafts SET status = ? WHERE id = ?", (status, draft_id))
+        # Старые черновики не копим: кнопка «Отправить» через пару суток всё равно не сработает
+        cursor.execute("DELETE FROM drafts WHERE created_at < datetime('now', '-3 days')")
 
 def get_recent_night_logs(limit: int = 20):
     with get_cursor() as cursor:

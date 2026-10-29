@@ -26,7 +26,14 @@ from dotenv import load_dotenv
 from aiohttp import web
 
 import db
-from ai_brain import analyze_message, make_cute_text, parse_user_intent, MODELS_TO_TRY
+from ai_brain import (
+    analyze_message,
+    make_cute_text,
+    make_draft_reply,
+    parse_user_intent,
+    summarize_chat,
+    MODELS_TO_TRY
+)
 
 load_dotenv()
 
@@ -729,6 +736,9 @@ HELP_TEXT = (
     "💼 <b>Автоответчик</b> <i>(Telegram Business)</i>\n"
     "Отвечает на обычные и технические вопросы, понимает голосовые и скриншоты, "
     "предупреждает о грубом тоне. После твоего ответа в чате молчит 10 минут.\n"
+    "На личное не отвечает сам, а присылает ✍️ черновик в твоём стиле: «📤 Отправить», «🔄 Другой» "
+    "или ответь на уведомление своим текстом. «🧾 Что я пропустил?» — сводка переписки.\n"
+    "/style — на каких твоих сообщениях ИИ учится писать как ты\n"
     "/default · /busy · /sleep · /ignore_all — режимы\n"
     "/goodmorning — ночной дайджест\n"
     "/stats — статистика\n\n"
@@ -748,6 +758,27 @@ HELP_TEXT = (
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     await message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]))
+
+@dp.message(Command("style"))
+async def cmd_style(message: types.Message):
+    total = db.count_owner_style_samples()
+    samples = db.get_owner_style_samples(limit=8)
+    if not samples:
+        await message.answer(
+            "✍️ <b>Мой стиль</b>\n\n"
+            "Пока не на чем учиться: я запоминаю сообщения, которые ты пишешь сам в бизнес-чатах. "
+            "Ответь пару раз вручную — и черновики начнут звучать как ты."
+        )
+        return
+    examples = "\n".join(f"• {esc(clip(s, 120))}" for s in samples)
+    await message.answer(
+        f"✍️ <b>Мой стиль</b>\n\n"
+        f"Черновики пишутся по образцу твоих последних ручных сообщений "
+        f"(в памяти: <b>{total}</b>, в каждом черновике используется до 30).\n\n"
+        f"Свежие образцы:\n<blockquote expandable>{examples}</blockquote>\n"
+        f"<i>Сообщения с «~» не учитываются — это не твой обычный стиль.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
+    )
 
 @dp.callback_query(F.data == "show_help")
 async def cb_help(callback: types.CallbackQuery):
@@ -809,32 +840,59 @@ async def handle_business_message(message: types.Message):
     text = message.text or message.caption or ""
     shown_text = esc(clip(text, 1500)) or "<i>голосовое / медиа</i>"
 
+    # Сообщения, которые отправил сам бот (автоответ, черновик), не считаем ручными ответами
+    if message.sender_business_bot:
+        return
+
     last_msg_time = user_last_manual_msg.get(chat_id, 0)
     was_paused = (time.time() - last_msg_time < PAUSE_TIMEOUT)
+
+    # Запоминаем собеседника (чат в Business — всегда личка с ним) и соединение для отправки черновиков
+    try:
+        db.upsert_known_chat(chat_id, message.chat.full_name or str(chat_id), message.chat.username,
+                             message.business_connection_id)
+    except Exception as e:
+        logging.warning(f"Не удалось сохранить чат {chat_id}: {e}")
 
     # 1. Если сообщение отправлено ТОБОЙ (пишешь сам вручную)
     if sender_id == MY_ID:
         user_last_manual_msg[chat_id] = time.time()
+        final_text = text
 
-        # --- ФОРМАТИРОВАНИЕ ПО ПРЕФИКСУ ~ ---
+        # --- ФОРМАТИРОВАНИЕ ПО ПРЕФИКСУ ~ (редактируем исходное сообщение, а не отвечаем) ---
         if text.startswith("~"):
             clean_text = text[1:].strip()
+            final_text = ""  # кавайный текст — не образец твоего стиля
             if clean_text:
                 try:
                     cute_text = await make_cute_text(clean_text)
-                    if cute_text:
-                        await bot.edit_message_text(
-                            text=cute_text,
-                            chat_id=chat_id,
-                            message_id=message.message_id,
-                            business_connection_id=message.business_connection_id,
-                            parse_mode=None
-                        )
+                    if cute_text and cute_text != clean_text:
+                        if message.caption is not None:
+                            await bot.edit_message_caption(
+                                caption=cute_text[:1024],
+                                chat_id=chat_id,
+                                message_id=message.message_id,
+                                business_connection_id=message.business_connection_id,
+                                parse_mode=None
+                            )
+                        else:
+                            await bot.edit_message_text(
+                                text=cute_text,
+                                chat_id=chat_id,
+                                message_id=message.message_id,
+                                business_connection_id=message.business_connection_id,
+                                parse_mode=None
+                            )
                 except Exception as e:
                     logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
 
+        db.add_chat_message(chat_id, "me", final_text)
+
+        # Если автоответ в этом чате и так не работает — не о чем уведомлять
+        autoreply_off = db.is_chat_disabled(chat_id) or db.is_blacklisted(chat_id)
+
         # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
-        if not was_paused:
+        if not was_paused and not autoreply_off:
             logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Ставим на паузу.")
             kb = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}")
@@ -842,7 +900,7 @@ async def handle_business_message(message: types.Message):
             await bot.send_message(
                 MY_ID,
                 f"⏸️ <b>Пауза 10 минут</b>\n"
-                f"Ты ответил сам в чате <code>{chat_id}</code> — я пока помолчу.",
+                f"Ты ответил сам в чате с <b>{esc(message.chat.full_name) or chat_id}</b> — я пока помолчу.",
                 reply_markup=kb
             )
         return
@@ -850,6 +908,11 @@ async def handle_business_message(message: types.Message):
     # Проверка глобальных запретов (Черный список или Отключенный чат)
     if db.is_blacklisted(sender_id) or db.is_chat_disabled(chat_id):
         return
+
+    # История берётся ДО записи текущего сообщения, чтобы оно не попало в контекст дважды
+    history = db.get_chat_history(chat_id, limit=10)
+    if text:
+        db.add_chat_message(chat_id, "them", text)
 
     # 2. ПРОВЕРКА СПЕЦИАЛЬНЫХ РЕЖИМОВ И ПАУЗЫ
     status = db.get_status()
@@ -869,6 +932,7 @@ async def handle_business_message(message: types.Message):
         await mark_read()
         await asyncio.sleep(2)
         await message.answer(STATUS_REPLIES[mode], parse_mode=None)
+        db.add_chat_message(chat_id, "bot", STATUS_REPLIES[mode])
         db.log_activity("status", chat_id, sender_id, sender_name, text, STATUS_REPLIES[mode], mode)
 
     if status == "ignore":
@@ -923,7 +987,7 @@ async def handle_business_message(message: types.Message):
     user_profile = db.get_user_profile(sender_id)
     is_aggr = db.is_aggressive(sender_id)
 
-    analysis = await analyze_message(text, photo_path, voice_path, user_profile, is_aggressive=is_aggr)
+    analysis = await analyze_message(text, photo_path, voice_path, user_profile, is_aggressive=is_aggr, history=history)
 
     for path in (photo_path, voice_path):
         if path and os.path.exists(path):
@@ -941,6 +1005,10 @@ async def handle_business_message(message: types.Message):
     if new_profile:
         db.update_user_profile(sender_id, sender_name, new_profile)
 
+    # Голосовые и фото без подписи попадают в историю через расшифровку/описание
+    if not text and summary:
+        db.add_chat_message(chat_id, "them", f"[{'Голосовое' if message.voice else 'Медиа'}] {summary}")
+
     summary_block = f"\n💡 <i>{esc(summary)}</i>" if summary else ""
     who = f"{esc(sender_name)} · <code>{sender_id}</code>"
 
@@ -957,21 +1025,41 @@ async def handle_business_message(message: types.Message):
         if is_aggr else
         InlineKeyboardButton(text="🔥 Вкл агрессию", callback_data=f"aggr_{sender_id}")
     )
-    kb_actions = InlineKeyboardMarkup(inline_keyboard=[
+    summary_btn = InlineKeyboardButton(text="🧾 Что я пропустил?", callback_data=f"chat_summary_{chat_id}")
+    action_rows = [
         [
             InlineKeyboardButton(text="🚫 Игнорировать", callback_data=f"ban_{sender_id}"),
             InlineKeyboardButton(text="⏸️ Пауза", callback_data=f"pause_{chat_id}")
         ],
-        [aggr_btn]
-    ])
+        [aggr_btn, summary_btn]
+    ]
+    kb_actions = InlineKeyboardMarkup(inline_keyboard=action_rows)
 
     if category == "personal":
         db.log_activity("personal", chat_id, sender_id, sender_name, incoming_for_log, "", category, summary)
-        await bot.send_message(
-            MY_ID,
-            f"📥 <b>Личное</b> · {who}\n<blockquote>{shown_text}</blockquote>{summary_block}",
-            reply_markup=kb_actions
+        # Сам не отвечаю, но готовлю черновик в твоём стиле — отправишь одной кнопкой
+        incoming_for_draft = text or summary
+        draft_text = await make_draft_reply(
+            incoming_for_draft,
+            history=db.get_chat_history(chat_id, limit=15),
+            style_samples=db.get_owner_style_samples(),
+            user_profile=new_profile or user_profile
         )
+        if draft_text and message.business_connection_id:
+            draft_id = db.add_draft(chat_id, message.business_connection_id, incoming_for_draft, draft_text)
+            sent = await bot.send_message(
+                MY_ID,
+                f"📥 <b>Личное</b> · {who}\n<blockquote>{shown_text}</blockquote>{summary_block}\n\n"
+                + draft_block(draft_text),
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=draft_rows(draft_id) + action_rows)
+            )
+            db.update_draft(draft_id, owner_msg_id=sent.message_id)
+        else:
+            await bot.send_message(
+                MY_ID,
+                f"📥 <b>Личное</b> · {who}\n<blockquote>{shown_text}</blockquote>{summary_block}",
+                reply_markup=kb_actions
+            )
 
     elif category in ["formal", "tech_vpn", "urgent"] or message.voice:
         await asyncio.sleep(2)
@@ -987,6 +1075,7 @@ async def handle_business_message(message: types.Message):
         elif reply_text:
             # Ответ ИИ отправляем как обычный текст: символы < > & не должны ломать отправку
             await message.answer(reply_text, parse_mode=None)
+            db.add_chat_message(chat_id, "bot", reply_text)
             db.log_activity("reply", chat_id, sender_id, sender_name, incoming_for_log, reply_text, category, summary)
             aggr_tag = " 🔥" if is_aggr else ""
             await bot.send_message(
@@ -996,6 +1085,144 @@ async def handle_business_message(message: types.Message):
                 f"↳ {esc(reply_text)}{summary_block}",
                 reply_markup=kb_actions
             )
+
+# --- Черновики ответов на личное ---
+
+DRAFT_MARKER = "✍️ <b>Черновик ответа</b>"
+
+def draft_block(draft_text: str) -> str:
+    return (
+        f"{DRAFT_MARKER} <i>(в твоём стиле)</i>\n"
+        f"<blockquote>{esc(clip(draft_text, 1800))}</blockquote>\n"
+        f"<i>Можно ответить на это сообщение своим текстом — отправлю его вместо черновика.</i>"
+    )
+
+def draft_rows(draft_id: int) -> list:
+    return [[
+        InlineKeyboardButton(text="📤 Отправить", callback_data=f"draft_send_{draft_id}"),
+        InlineKeyboardButton(text="🔄 Другой", callback_data=f"draft_regen_{draft_id}"),
+        InlineKeyboardButton(text="✖️", callback_data=f"draft_drop_{draft_id}")
+    ]]
+
+async def send_as_owner(draft: dict, text_to_send: str) -> Optional[str]:
+    """Отправляет текст собеседнику от твоего имени. Возвращает текст ошибки или None"""
+    try:
+        await bot.send_message(
+            draft["chat_id"], text_to_send,
+            business_connection_id=draft["business_connection_id"],
+            parse_mode=None
+        )
+    except TelegramBadRequest as e:
+        return str(e)
+    db.update_draft(draft["id"], text=text_to_send, status="sent")
+    db.add_chat_message(draft["chat_id"], "me", text_to_send)
+    # Ты ответил (пусть и черновиком) — автоответчик в этом чате молчит, как после ручного ответа
+    user_last_manual_msg[draft["chat_id"]] = time.time()
+    return None
+
+def draft_chat_name(draft: dict) -> str:
+    known = db.get_known_chat(draft["chat_id"])
+    return esc(known["name"]) if known and known.get("name") else f"<code>{draft['chat_id']}</code>"
+
+@dp.callback_query(F.data.startswith("draft_send_"))
+async def cb_draft_send(callback: types.CallbackQuery):
+    draft = db.get_draft(int(callback.data.replace("draft_send_", "")))
+    if not draft or draft["status"] != "pending":
+        await callback.answer("Этот черновик уже отправлен или отменён.", show_alert=True)
+        return
+    error = await send_as_owner(draft, draft["text"])
+    if error:
+        await callback.answer("Не получилось отправить", show_alert=True)
+        await callback.message.answer(f"⚠️ <b>Черновик не отправлен</b>\n<code>{esc(clip(error, 300))}</code>")
+        return
+    await callback.answer("📤 Отправлено")
+    await safe_edit(
+        callback.message,
+        f"📤 <b>Отправлено</b> → {draft_chat_name(draft)}\n<blockquote>{esc(draft['text'])}</blockquote>",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🧾 Что я пропустил?", callback_data=f"chat_summary_{draft['chat_id']}")
+        ]])
+    )
+
+@dp.callback_query(F.data.startswith("draft_regen_"))
+async def cb_draft_regen(callback: types.CallbackQuery):
+    draft = db.get_draft(int(callback.data.replace("draft_regen_", "")))
+    if not draft or draft["status"] != "pending":
+        await callback.answer("Этот черновик уже отправлен или отменён.", show_alert=True)
+        return
+    await callback.answer("✍️ Пишу другой вариант…")
+    new_text = await make_draft_reply(
+        draft["incoming"],
+        history=db.get_chat_history(draft["chat_id"], limit=15),
+        style_samples=db.get_owner_style_samples(),
+        user_profile=db.get_user_profile(draft["chat_id"]),
+        previous_draft=draft["text"]
+    )
+    if not new_text:
+        await callback.message.answer("⚠️ ИИ сейчас не ответил — попробуй ещё раз чуть позже.")
+        return
+    db.update_draft(draft["id"], text=new_text)
+    # Заменяем только блок черновика, оставляя исходное уведомление над ним
+    head = (callback.message.html_text or "").rsplit(DRAFT_MARKER, 1)[0].rstrip()
+    await safe_edit(
+        callback.message,
+        f"{head}\n\n{draft_block(new_text)}" if head else draft_block(new_text),
+        callback.message.reply_markup
+    )
+
+@dp.callback_query(F.data.startswith("draft_drop_"))
+async def cb_draft_drop(callback: types.CallbackQuery):
+    draft_id = int(callback.data.replace("draft_drop_", ""))
+    db.update_draft(draft_id, status="dropped")
+    await callback.answer("Черновик убран")
+    # Кнопки черновика убираем, остальные (игнор, пауза, сводка) оставляем
+    rows = [row for row in (callback.message.reply_markup.inline_keyboard if callback.message.reply_markup else [])
+            if not any((b.callback_data or "").startswith("draft_") for b in row)]
+    head = (callback.message.html_text or "").rsplit(DRAFT_MARKER, 1)[0].rstrip()
+    await safe_edit(callback.message, head or "✖️ Черновик убран", InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+
+async def try_send_draft_reply(message: types.Message) -> bool:
+    """Ответ реплаем на уведомление с черновиком — отправляем собеседнику твой текст"""
+    reply_to = message.reply_to_message
+    if not reply_to or not message.text:
+        return False
+    draft = db.get_draft_by_owner_msg(reply_to.message_id)
+    if not draft:
+        return False
+    if draft["status"] == "sent":
+        await message.answer("ℹ️ На это сообщение ты уже ответил. Новый текст отправь прямо в чат.")
+        return True
+    error = await send_as_owner(draft, message.text)
+    if error:
+        await message.answer(f"⚠️ <b>Не отправилось</b>\n<code>{esc(clip(error, 300))}</code>")
+    else:
+        await message.answer(f"📤 <b>Отправлено</b> → {draft_chat_name(draft)}")
+        try:
+            await reply_to.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    return True
+
+# --- Сводка «Что я пропустил?» ---
+
+@dp.callback_query(F.data.startswith("chat_summary_"))
+async def cb_chat_summary(callback: types.CallbackQuery):
+    chat_id = int(callback.data.replace("chat_summary_", ""))
+    history = db.get_chat_history(chat_id, limit=30)
+    if not history:
+        await callback.answer("Я пока не видел переписки в этом чате.", show_alert=True)
+        return
+    await callback.answer("🧾 Собираю сводку…")
+    known = db.get_known_chat(chat_id)
+    name = known["name"] if known and known.get("name") else str(chat_id)
+    summary_text = await summarize_chat(history, name)
+    if not summary_text:
+        await callback.message.answer("⚠️ ИИ сейчас не ответил — попробуй ещё раз чуть позже.")
+        return
+    await callback.message.answer(
+        f"🧾 <b>Что ты пропустил</b> · {esc(name)}\n"
+        f"<i>по последним {len(history)} сообщениям</i>\n\n{esc(summary_text)}"
+    )
 
 # --- Инлайн-кнопки Бизнес-Ассистента ---
 
@@ -1381,6 +1608,10 @@ async def handle_private_message(message: types.Message):
     if message.text and message.text.startswith("/"):
         return
 
+    # Ответ реплаем на черновик — это текст для собеседника, а не задача/заметка
+    if await try_send_draft_reply(message):
+        return
+
     text = message.text or message.caption or ""
     if not text:
         if message.voice or message.photo:
@@ -1547,6 +1778,7 @@ async def main():
         BotCommand(command="ignore_all", description="🚫 Режим: не беспокоить"),
         BotCommand(command="timezone", description="🌍 Часовой пояс"),
         BotCommand(command="backup", description="💾 Бэкап базы сейчас"),
+        BotCommand(command="style", description="✍️ Мой стиль для черновиков"),
         BotCommand(command="help", description="📖 Справка"),
     ]
     try:
