@@ -656,7 +656,7 @@ async def handle_business_message(message: types.Message):
             clean_text = text[1:].strip()
             if clean_text:
                 try:
-                    cute_text = await make_cute_text(clean_text)
+                    cute_text = await asyncio.to_thread(make_cute_text, clean_text)
                     if cute_text:
                         await bot.edit_message_text(
                             text=cute_text,
