@@ -165,6 +165,13 @@ def init_db():
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_drafts_owner_msg ON drafts(owner_msg_id)")
 
+        # VIP-контакты: бот им не отвечает, а сразу пересылает сообщения владельцу
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vip_users (
+                user_id INTEGER PRIMARY KEY
+            )
+        """)
+
 _status_cache = None
 
 # ==============================================================================
@@ -653,6 +660,42 @@ def get_known_chat(chat_id: int) -> Optional[dict]:
         cursor.execute("SELECT chat_id, name, username, business_connection_id FROM known_chats WHERE chat_id = ?", (chat_id,))
         r = cursor.fetchone()
     return {"chat_id": r[0], "name": r[1], "username": r[2], "business_connection_id": r[3]} if r else None
+
+def get_disabled_chats() -> list:
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT d.chat_id, k.name, k.username
+            FROM disabled_chats d
+            LEFT JOIN known_chats k ON k.chat_id = d.chat_id
+            ORDER BY k.name
+        """)
+        rows = cursor.fetchall()
+    return [{"id": r[0], "name": r[1], "username": r[2]} for r in rows]
+
+# --- VIP-контакты ---
+def is_vip(user_id: int) -> bool:
+    with get_cursor() as cursor:
+        cursor.execute("SELECT user_id FROM vip_users WHERE user_id = ?", (user_id,))
+        return cursor.fetchone() is not None
+
+def add_vip(user_id: int):
+    with get_cursor(commit=True) as cursor:
+        cursor.execute("INSERT OR IGNORE INTO vip_users (user_id) VALUES (?)", (user_id,))
+
+def remove_vip(user_id: int):
+    with get_cursor(commit=True) as cursor:
+        cursor.execute("DELETE FROM vip_users WHERE user_id = ?", (user_id,))
+
+def get_vip_users() -> list:
+    with get_cursor() as cursor:
+        cursor.execute("""
+            SELECT v.user_id, k.name, k.username
+            FROM vip_users v
+            LEFT JOIN known_chats k ON k.chat_id = v.user_id
+            ORDER BY k.name
+        """)
+        rows = cursor.fetchall()
+    return [{"id": r[0], "name": r[1], "username": r[2]} for r in rows]
 
 # --- Черновики ответов ---
 def add_draft(chat_id: int, business_connection_id: str, incoming: str, text: str) -> int:

@@ -12,7 +12,7 @@ from typing import Optional
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardMarkup,
@@ -51,6 +51,10 @@ PUBLIC_URL = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or f"h
 user_last_manual_msg = {}
 PAUSE_TIMEOUT = 600  # 10 минут (в секундах)
 
+# (chat_id, режим) -> время последнего статусного автоответа, чтобы не отвечать на каждое сообщение
+status_reply_sent = {}
+STATUS_REPLY_COOLDOWN = 1800  # 30 минут
+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -64,7 +68,7 @@ dp = Dispatcher()
 MODES = {
     "default": ("💼", "Обычный", "отвечаю на сообщения за тебя"),
     "busy": ("🎮", "Занят", "прошу писать «срочно», если дело важное"),
-    "sleep": ("🌙", "Сплю", "собираю сообщения в утренний дайджест"),
+    "sleep": ("🌙", "Сплю", "собираю сообщения в утреннюю сводку"),
     "ignore": ("🚫", "Не беспокоить", "вежливо сообщаю, что ты не на связи"),
 }
 
@@ -366,6 +370,10 @@ async def reminder_worker(bot_instance: Bot):
                     await bot_instance.send_message(chat_id=chat_id, text=msg_text, reply_markup=kb)
                     # «sent», а не «completed»: сработавшее напоминание ещё можно отложить
                     db.mark_reminder_sent(rem_id)
+                except (TelegramForbiddenError, TelegramBadRequest) as e:
+                    # Бот заблокирован / чат недоступен — повтор не поможет, иначе ретрай каждые 15 сек вечно
+                    logging.error(f"Напоминание {rem_id} не может быть доставлено в чат {chat_id}: {e}")
+                    db.set_reminder_status(rem_id, "failed")
                 except Exception as e:
                     logging.error(f"Не удалось отправить напоминание {rem_id} в чат {chat_id}: {e}")
         except Exception as e:
@@ -553,6 +561,7 @@ def build_home(first_name: str):
         f"⏰ Напоминаний: <b>{reminders_count}</b>\n"
         f"📝 Заметок: <b>{notes_count}</b>\n"
         f"💬 Ответов ИИ за сутки: <b>{replies_24h}</b>\n"
+        f"🌙 Расписание сна: <b>{schedule_label()}</b>\n"
         f"🌍 Часовой пояс: <b>{tz_label(tz)}</b>\n\n"
         f"<b>Как пользоваться</b>\n"
         f"Просто напиши или перешли мне сообщение:\n"
@@ -574,7 +583,14 @@ def build_home(first_name: str):
             InlineKeyboardButton(text="📝 Заметки", callback_data="notes_menu")
         ],
         [
-            InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats"),
+            InlineKeyboardButton(text=f"⭐ VIP ({len(db.get_vip_users())})", callback_data="vips_menu"),
+            InlineKeyboardButton(text=f"🛑 Откл. чаты ({len(db.get_disabled_chats())})", callback_data="disabled_menu")
+        ],
+        [
+            InlineKeyboardButton(text="🌙 Расписание", callback_data="schedule_menu"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats")
+        ],
+        [
             InlineKeyboardButton(text="🌍 Пояс", callback_data="open_tz_menu")
         ],
         [
@@ -630,30 +646,187 @@ async def cmd_sleep(message: types.Message):
 async def cmd_busy(message: types.Message):
     await set_mode_and_reply(message, "busy")
 
+def build_morning_summary() -> str:
+    """Утренняя сводка: кто писал ночью + напоминания на сегодня. Ночные логи при этом очищаются"""
+    text = f"🌅 <b>Утренняя сводка</b>\n{mode_line('default')}\n\n"
+
+    logs = db.pop_night_messages()
+    if logs:
+        lines = []
+        budget = 2500  # лимит сообщения Telegram — 4096 символов, оставляем место под напоминания
+        for name, msg in logs:
+            line = f"• <b>{esc(name) or 'Без имени'}</b>: {esc(clip(msg, 300))}"
+            if budget - len(line) < 0:
+                lines.append(f"…и ещё {len(logs) - len(lines)} сообщ.")
+                break
+            budget -= len(line)
+            lines.append(line)
+        text += f"💬 <b>Пока ты спал, писали</b> · {len(logs)}\n<blockquote expandable>" + "\n".join(lines) + "</blockquote>\n"
+    else:
+        text += "💬 Ночью никто не писал — можно спокойно пить кофе ☕\n"
+
+    local_tz = timezone(timedelta(hours=db.get_user_tz_offset(MY_ID)))
+    today = datetime.now(local_tz).date()
+    todays = []
+    for rem in db.get_active_reminders(MY_ID):
+        try:
+            dt = datetime.fromisoformat(rem["remind_at_local"])
+        except Exception:
+            continue
+        if dt.date() <= today:
+            todays.append((dt, rem["text"]))
+    if todays:
+        lines = []
+        for dt, rem_text in todays[:15]:
+            when = dt.strftime("%H:%M") if dt.date() == today else f"просрочено с {dt.strftime('%d.%m')}"
+            lines.append(f"<code>{when}</code> — {esc(clip(rem_text, 120))}")
+        text += f"\n⏰ <b>На сегодня</b> · {len(todays)}\n" + "\n".join(lines)
+    else:
+        text += "\n⏰ На сегодня напоминаний нет."
+    return text
+
+async def send_morning_summary(chat_id: int):
+    await bot.send_message(
+        chat_id, build_morning_summary(),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
+    )
+
 @dp.message(Command("goodmorning"))
 async def cmd_goodmorning(message: types.Message):
     db.set_status("default")
-    logs = db.pop_night_messages()
-    header = f"🌅 <b>Доброе утро!</b>\n{mode_line('default')}\n\n"
-    if not logs:
-        await message.answer(header + "Ночью никто не писал — можно спокойно пить кофе ☕")
-        return
+    db.set_setting("schedule_auto_sleep", "0")
+    await send_morning_summary(message.chat.id)
 
-    lines = []
-    budget = 3500  # лимит сообщения Telegram — 4096 символов
-    for name, msg in logs:
-        line = f"• <b>{esc(name) or 'Без имени'}</b>: {esc(clip(msg, 300))}"
-        if budget - len(line) < 0:
-            lines.append(f"…и ещё {len(logs) - len(lines)} сообщ.")
-            break
-        budget -= len(line)
-        lines.append(line)
+# --- Расписание сна ---
 
-    await message.answer(
-        header
-        + f"Пока ты спал, писали ({len(logs)}):\n"
-        + "<blockquote expandable>" + "\n".join(lines) + "</blockquote>"
+def parse_hhmm(value: str) -> Optional[int]:
+    """'01:00' -> минуты от полуночи"""
+    try:
+        h, m = (value or "").replace(".", ":").split(":")
+        h, m = int(h), int(m)
+    except ValueError:
+        return None
+    return h * 60 + m if 0 <= h <= 23 and 0 <= m <= 59 else None
+
+def fmt_minutes(m: int) -> str:
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+def get_schedule():
+    """(start, end) в минутах или None, если расписание выключено"""
+    if db.get_setting("schedule_enabled") != "1":
+        return None
+    start = parse_hhmm(db.get_setting("sleep_start"))
+    end = parse_hhmm(db.get_setting("sleep_end"))
+    if start is None or end is None or start == end:
+        return None
+    return start, end
+
+def schedule_label() -> str:
+    sch = get_schedule()
+    return f"{fmt_minutes(sch[0])}–{fmt_minutes(sch[1])}" if sch else "выкл"
+
+def schedule_window_id(now_local: datetime, start: int, end: int) -> Optional[str]:
+    """Дата начала текущего окна сна (окно может переходить через полночь) или None вне окна"""
+    cur = now_local.hour * 60 + now_local.minute
+    if start < end:
+        return now_local.date().isoformat() if start <= cur < end else None
+    if cur >= start:
+        return now_local.date().isoformat()
+    if cur < end:
+        return (now_local.date() - timedelta(days=1)).isoformat()
+    return None
+
+SCHEDULE_PRESETS = [("00:00", "08:00"), ("01:00", "09:00"), ("23:00", "07:00"), ("02:00", "10:00")]
+
+def build_schedule_menu():
+    sch = get_schedule()
+    rows = [[
+        InlineKeyboardButton(
+            text=f"{'● ' if sch and (fmt_minutes(sch[0]), fmt_minutes(sch[1])) == (s, e) else ''}{s}–{e}",
+            callback_data=f"sched_{s.replace(':', '')}_{e.replace(':', '')}"
+        )
+        for s, e in SCHEDULE_PRESETS[i:i + 2]
+    ] for i in range(0, len(SCHEDULE_PRESETS), 2)]
+    if sch:
+        rows.append([InlineKeyboardButton(text="⏹ Выключить расписание", callback_data="sched_off")])
+    rows.append(back_to_menu_row())
+    text = (
+        f"🌙 <b>Расписание сна</b>\n\n"
+        f"Сейчас: <b>{schedule_label()}</b> ({tz_label(db.get_user_tz_offset(MY_ID))})\n\n"
+        f"В начале окна сам включу 🌙 режим сна, в конце — 💼 обычный и пришлю 🌅 утреннюю сводку.\n"
+        f"Если ночью сам переключишь режим (например, на «Занят»), расписание его не перебьёт.\n\n"
+        f"Выбери окно или задай своё: <code>/schedule 01:30 09:00</code>"
     )
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+def set_schedule(start: str, end: str):
+    db.set_setting("sleep_start", start)
+    db.set_setting("sleep_end", end)
+    db.set_setting("schedule_enabled", "1")
+
+@dp.message(Command("schedule"))
+async def cmd_schedule(message: types.Message):
+    args = (message.text or "").split()
+    if len(args) == 2 and args[1].lower() in ("off", "выкл"):
+        db.set_setting("schedule_enabled", "0")
+    elif len(args) == 3:
+        start, end = parse_hhmm(args[1]), parse_hhmm(args[2])
+        if start is None or end is None or start == end:
+            await message.answer("⚠️ <b>Формат:</b> <code>/schedule 01:00 09:00</code> — начало и конец сна, не совпадающие.")
+            return
+        set_schedule(fmt_minutes(start), fmt_minutes(end))
+    text, kb = build_schedule_menu()
+    await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data == "schedule_menu")
+async def cb_schedule_menu(callback: types.CallbackQuery):
+    text, kb = build_schedule_menu()
+    await safe_edit(callback.message, text, kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("sched_"))
+async def cb_schedule_set(callback: types.CallbackQuery):
+    if callback.data == "sched_off":
+        db.set_setting("schedule_enabled", "0")
+        await callback.answer("Расписание выключено")
+    else:
+        _, s, e = callback.data.split("_")
+        set_schedule(f"{s[:2]}:{s[2:]}", f"{e[:2]}:{e[2:]}")
+        await callback.answer(f"🌙 Сплю {schedule_label()}")
+    text, kb = build_schedule_menu()
+    await safe_edit(callback.message, text, kb)
+
+async def schedule_worker():
+    """Раз в 30 сек проверяет расписание сна: включает режим сна и утром присылает сводку"""
+    logging.info("🌙 Воркер расписания сна запущен.")
+    while True:
+        try:
+            sch = get_schedule()
+            if sch and MY_ID:
+                now_local = datetime.now(timezone(timedelta(hours=db.get_user_tz_offset(MY_ID))))
+                window = schedule_window_id(now_local, *sch)
+                if window and db.get_setting("schedule_last_window") != window:
+                    # Каждое окно обрабатываем один раз: ручная смена режима посреди ночи не перебивается
+                    db.set_setting("schedule_last_window", window)
+                    current = db.get_status()
+                    if current in ("default", "sleep"):
+                        # Если ты уже сам включил «Сплю» — утром всё равно разбужу и пришлю сводку
+                        db.set_setting("schedule_auto_sleep", "1")
+                    if current == "default":
+                        db.set_status("sleep")
+                        await bot.send_message(
+                            MY_ID, f"🌙 <b>По расписанию включён режим сна</b> до {fmt_minutes(sch[1])}. Спокойной ночи!",
+                            disable_notification=True
+                        )
+                elif not window and db.get_setting("schedule_auto_sleep") == "1":
+                    db.set_setting("schedule_auto_sleep", "0")
+                    # Сводку шлём, только если ты сам не сменил режим за ночь
+                    if db.get_status() == "sleep":
+                        db.set_status("default")
+                        await send_morning_summary(MY_ID)
+        except Exception as e:
+            logging.error(f"Ошибка в цикле schedule_worker: {e}")
+        await asyncio.sleep(30)
 
 def build_stats_text() -> str:
     stats = db.get_stats_summary()
@@ -719,6 +892,135 @@ async def cmd_unaggressive(message: types.Message):
     await id_command(message, "/unaggressive ID_ПОЛЬЗОВАТЕЛЯ", db.remove_from_aggressive,
                      "🟢 <b>Агрессивный режим выключен</b> для {id}")
 
+# --- Отключённые чаты и VIP-контакты ---
+
+def contact_label(c: dict) -> str:
+    label = c.get("name") or f"ID {c['id']}"
+    if c.get("username"):
+        label += f" (@{c['username']})"
+    return label
+
+def build_disabled_menu():
+    chats = db.get_disabled_chats()
+    if not chats:
+        text = (
+            "🛑 <b>Отключённые чаты</b>\n\n"
+            "Пусто — автоответ работает во всех чатах.\n"
+            "<i>Отключить чат можно кнопкой «🛑 Отключить чат» под любым уведомлением.</i>"
+        )
+        return text, InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
+    lines = [f"• {esc(contact_label(c))} · <code>{c['id']}</code>" for c in chats]
+    rows = [[InlineKeyboardButton(text=clip(f"🟢 {contact_label(c)}", 60), callback_data=f"menu_enable_{c['id']}")] for c in chats]
+    rows.append(back_to_menu_row())
+    text = f"🛑 <b>Отключённые чаты</b> · {len(chats)}\n\n" + "\n".join(lines) + "\n\n<i>Нажми на чат, чтобы снова включить автоответ.</i>"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+def build_vip_menu():
+    vips = db.get_vip_users()
+    if not vips:
+        text = (
+            "⭐ <b>VIP-контакты</b>\n\n"
+            "Пусто. Сообщения VIP я не обрабатываю и не отвечаю на них — сразу пересылаю тебе, даже ночью.\n"
+            "<i>Добавить: кнопка «⭐ В VIP» под уведомлением или</i> <code>/vip ID</code>"
+        )
+        return text, InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
+    lines = [f"• {esc(contact_label(v))} · <code>{v['id']}</code>" for v in vips]
+    rows = [[InlineKeyboardButton(text=clip(f"✖️ {contact_label(v)}", 60), callback_data=f"menu_unvip_{v['id']}")] for v in vips]
+    rows.append(back_to_menu_row())
+    text = f"⭐ <b>VIP-контакты</b> · {len(vips)}\n\n" + "\n".join(lines) + "\n\n<i>Их сообщения сразу пересылаются тебе. Нажми, чтобы убрать.</i>"
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+def contact_name(user_id: int) -> str:
+    known = db.get_known_chat(user_id)
+    return esc(known["name"]) if known and known.get("name") else f"<code>{user_id}</code>"
+
+@dp.message(Command("disabled"))
+async def cmd_disabled(message: types.Message):
+    text, kb = build_disabled_menu()
+    await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data == "disabled_menu")
+async def cb_disabled_menu(callback: types.CallbackQuery):
+    text, kb = build_disabled_menu()
+    await safe_edit(callback.message, text, kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("menu_enable_"))
+async def cb_menu_enable(callback: types.CallbackQuery):
+    db.enable_chat(int(callback.data.replace("menu_enable_", "")))
+    await callback.answer("🟢 Автоответ включён")
+    text, kb = build_disabled_menu()
+    await safe_edit(callback.message, text, kb)
+
+@dp.callback_query(F.data.startswith("disablechat_"))
+async def cb_disable_chat(callback: types.CallbackQuery):
+    chat_id = int(callback.data.replace("disablechat_", ""))
+    db.disable_chat(chat_id)
+    await callback.answer("🛑 Автоответ в чате выключен")
+    await safe_edit(
+        callback.message,
+        f"🛑 <b>Автоответ выключен</b> в чате с {contact_name(chat_id)}\n"
+        f"<i>Уведомлений о паузе по нему больше не будет.</i>",
+        InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🟢 Включить обратно", callback_data=f"enablechat_{chat_id}"),
+            InlineKeyboardButton(text="🛑 Все отключённые", callback_data="disabled_menu")
+        ]])
+    )
+
+@dp.callback_query(F.data.startswith("enablechat_"))
+async def cb_enable_chat(callback: types.CallbackQuery):
+    chat_id = int(callback.data.replace("enablechat_", ""))
+    db.enable_chat(chat_id)
+    await callback.answer("🟢 Автоответ включён")
+    await safe_edit(callback.message, f"🟢 <b>Автоответ включён</b> в чате с {contact_name(chat_id)}")
+
+@dp.message(Command("vips"))
+async def cmd_vips(message: types.Message):
+    text, kb = build_vip_menu()
+    await message.answer(text, reply_markup=kb)
+
+@dp.message(Command("vip"))
+async def cmd_vip(message: types.Message):
+    await id_command(message, "/vip ID_ПОЛЬЗОВАТЕЛЯ", db.add_vip,
+                     "⭐ {id} теперь <b>VIP</b> — его сообщения буду сразу пересылать тебе")
+
+@dp.message(Command("unvip"))
+async def cmd_unvip(message: types.Message):
+    await id_command(message, "/unvip ID_ПОЛЬЗОВАТЕЛЯ", db.remove_vip,
+                     "✖️ {id} больше не VIP — снова работает автоответчик")
+
+@dp.callback_query(F.data == "vips_menu")
+async def cb_vips_menu(callback: types.CallbackQuery):
+    text, kb = build_vip_menu()
+    await safe_edit(callback.message, text, kb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("menu_unvip_"))
+async def cb_menu_unvip(callback: types.CallbackQuery):
+    db.remove_vip(int(callback.data.replace("menu_unvip_", "")))
+    await callback.answer("Убран из VIP")
+    text, kb = build_vip_menu()
+    await safe_edit(callback.message, text, kb)
+
+@dp.callback_query(F.data.startswith("vip_"))
+async def cb_vip(callback: types.CallbackQuery):
+    user_id = int(callback.data.replace("vip_", ""))
+    db.add_vip(user_id)
+    await callback.answer("⭐ Добавлен в VIP")
+    await callback.message.answer(
+        f"⭐ {contact_name(user_id)} теперь <b>VIP</b>: я не буду ему отвечать и сразу перешлю тебе его сообщения.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✖️ Убрать из VIP", callback_data=f"unvip_{user_id}")
+        ]])
+    )
+
+@dp.callback_query(F.data.startswith("unvip_"))
+async def cb_unvip(callback: types.CallbackQuery):
+    user_id = int(callback.data.replace("unvip_", ""))
+    db.remove_vip(user_id)
+    await callback.answer("Убран из VIP")
+    await callback.message.answer(f"✖️ {contact_name(user_id)} больше не VIP — снова работает автоответчик.")
+
 HELP_TEXT = (
     "📖 <b>Справка</b>\n\n"
     "⏰ <b>Напоминания</b>\n"
@@ -740,9 +1042,12 @@ HELP_TEXT = (
     "или ответь на уведомление своим текстом. «🧾 Что я пропустил?» — сводка переписки.\n"
     "/style — на каких твоих сообщениях ИИ учится писать как ты\n"
     "/default · /busy · /sleep · /ignore_all — режимы\n"
-    "/goodmorning — ночной дайджест\n"
+    "/goodmorning — утренняя сводка (кто писал ночью + дела на сегодня)\n"
+    "/schedule — расписание сна: сам включу «Сплю» и утром пришлю сводку\n"
     "/stats — статистика\n\n"
     "🛠 <b>Управление чатами</b>\n"
+    "/disabled — отключённые чаты (кнопка «🛑 Отключить чат» под уведомлениями)\n"
+    "/vips · /vip · /unvip <code>ID</code> — VIP: не отвечаю, сразу пересылаю тебе\n"
     "/disable_chat · /enable_chat <code>ID</code> — автоответ в чате\n"
     "/aggressive · /unaggressive <code>ID</code> — дерзкие ответы\n"
     "/unban <code>ID</code> — убрать из игнора\n\n"
@@ -832,6 +1137,37 @@ STATUS_REPLIES = {
     "busy": "[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.",
 }
 
+async def forward_vip_message(message: types.Message):
+    """Пересылает сообщение VIP-контакта владельцу. Медиа шлём по file_id — он валиден для бота"""
+    sender_id = message.from_user.id
+    text = message.text or message.caption or ""
+    header = f"⭐ <b>VIP</b> · {esc(message.from_user.first_name) or 'Без имени'} · <code>{sender_id}</code>"
+    caption = f"{header}\n<blockquote>{esc(clip(text, 800))}</blockquote>" if text else header
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🧾 Что я пропустил?", callback_data=f"chat_summary_{message.chat.id}"),
+        InlineKeyboardButton(text="✖️ Убрать из VIP", callback_data=f"unvip_{sender_id}")
+    ]])
+    try:
+        if message.photo:
+            await bot.send_photo(MY_ID, message.photo[-1].file_id, caption=caption, reply_markup=kb)
+        elif message.voice:
+            await bot.send_voice(MY_ID, message.voice.file_id, caption=caption, reply_markup=kb)
+        elif message.video:
+            await bot.send_video(MY_ID, message.video.file_id, caption=caption, reply_markup=kb)
+        elif message.document:
+            await bot.send_document(MY_ID, message.document.file_id, caption=caption, reply_markup=kb)
+        elif message.video_note:
+            await bot.send_video_note(MY_ID, message.video_note.file_id)
+            await bot.send_message(MY_ID, f"{header}\n<i>видеосообщение</i>", reply_markup=kb)
+        elif message.sticker:
+            await bot.send_message(MY_ID, f"{header}\n<i>стикер {esc(message.sticker.emoji or '')}</i>", reply_markup=kb)
+        else:
+            await bot.send_message(MY_ID, f"{header}\n<blockquote>{esc(clip(text, 3500)) or '<i>медиа</i>'}</blockquote>", reply_markup=kb)
+    except Exception as e:
+        logging.error(f"Не удалось переслать VIP-сообщение от {sender_id}: {e}")
+        await bot.send_message(MY_ID, f"{header}\n<blockquote>{esc(clip(text, 3500)) or '<i>медиа — не удалось переслать</i>'}</blockquote>", reply_markup=kb)
+    db.log_activity("personal", message.chat.id, sender_id, message.from_user.first_name or "", text or "[Медиа]", "", "vip", "VIP — переслано владельцу")
+
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     sender_id = message.from_user.id
@@ -895,7 +1231,8 @@ async def handle_business_message(message: types.Message):
         if not was_paused and not autoreply_off:
             logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Ставим на паузу.")
             kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}")
+                InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}"),
+                InlineKeyboardButton(text="🛑 Отключить чат", callback_data=f"disablechat_{chat_id}")
             ]])
             await bot.send_message(
                 MY_ID,
@@ -914,6 +1251,11 @@ async def handle_business_message(message: types.Message):
     if text:
         db.add_chat_message(chat_id, "them", text)
 
+    # VIP: бот никогда не отвечает, сразу пересылает тебе (в любом режиме, без отметки «прочитано»)
+    if db.is_vip(sender_id):
+        await forward_vip_message(message)
+        return
+
     # 2. ПРОВЕРКА СПЕЦИАЛЬНЫХ РЕЖИМОВ И ПАУЗЫ
     status = db.get_status()
 
@@ -930,25 +1272,34 @@ async def handle_business_message(message: types.Message):
 
     async def status_reply(mode: str):
         await mark_read()
+        # Статусный ответ — не чаще раза в STATUS_REPLY_COOLDOWN на чат, а не на каждое сообщение
+        key = (chat_id, mode)
+        if time.time() - status_reply_sent.get(key, 0) < STATUS_REPLY_COOLDOWN:
+            return
+        status_reply_sent[key] = time.time()
         await asyncio.sleep(2)
         await message.answer(STATUS_REPLIES[mode], parse_mode=None)
         db.add_chat_message(chat_id, "bot", STATUS_REPLIES[mode])
         db.log_activity("status", chat_id, sender_id, sender_name, text, STATUS_REPLIES[mode], mode)
 
-    if status == "ignore":
+    # Чат на 10-минутной паузе после твоего ответа — ты сейчас в диалоге, поэтому бот молчит
+    # в любом режиме (иначе писал бы «Пользователь спит» посреди переписки).
+    # Голосовые на паузе идут дальше: их расшифруем и пришлём только тебе.
+    paused_voice = was_paused and bool(message.voice)
+
+    if status == "ignore" and not was_paused:
         await status_reply("ignore")
         return
 
-    if status == "sleep":
+    if status == "sleep" and not was_paused:
         db.save_night_message(sender_name, text or "[Голосовое сообщение/Медиа]")
         await status_reply("sleep")
         return
 
-    if status == "busy" and "срочно" not in text.lower():
+    if status == "busy" and not was_paused and "срочно" not in text.lower():
         await status_reply("busy")
         return
 
-    # Если чат на временной 10-минутной паузе после ручного ответа
     if was_paused and not message.voice:
         if message.photo or "срочно" in text.lower():
             kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -963,7 +1314,8 @@ async def handle_business_message(message: types.Message):
             )
         return
 
-    await mark_read()
+    if not paused_voice:
+        await mark_read()
 
     photo_path = None
     if message.photo:
@@ -1031,9 +1383,26 @@ async def handle_business_message(message: types.Message):
             InlineKeyboardButton(text="🚫 Игнорировать", callback_data=f"ban_{sender_id}"),
             InlineKeyboardButton(text="⏸️ Пауза", callback_data=f"pause_{chat_id}")
         ],
-        [aggr_btn, summary_btn]
+        [aggr_btn, summary_btn],
+        [
+            InlineKeyboardButton(text="⭐ В VIP", callback_data=f"vip_{sender_id}"),
+            InlineKeyboardButton(text="🛑 Отключить чат", callback_data=f"disablechat_{chat_id}")
+        ]
     ]
     kb_actions = InlineKeyboardMarkup(inline_keyboard=action_rows)
+
+    if paused_voice:
+        db.log_activity("personal", chat_id, sender_id, sender_name, incoming_for_log, "", category, summary)
+        await bot.send_message(
+            MY_ID,
+            f"🎤 <b>Голосовое</b> · {who}\n<i>Чат на паузе, я не отвечал.</i>\n"
+            f"<blockquote expandable>{esc(clip(summary, 3000)) or 'не удалось расшифровать'}</blockquote>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}"),
+                summary_btn
+            ]])
+        )
+        return
 
     if category == "personal":
         db.log_activity("personal", chat_id, sender_id, sender_name, incoming_for_log, "", category, summary)
@@ -1521,7 +1890,10 @@ async def process_incoming_text(message: types.Message, raw_text: str):
         reply = res_data.get("reply")
         if not reply:
             reply = "Записал! Пришли задачу со временем («завтра в 14:00 отчёт») или мысль для заметки."
-        await message.answer(f"🤖 {esc(reply)}")
+        # Ответы ИИ (код, длинные объяснения) легко превышают лимит Telegram в 4096 символов
+        full = f"🤖 {reply}"
+        for start in range(0, len(full), 4000):
+            await message.answer(full[start:start + 4000], parse_mode=None)
 
 # --- Бэкап вручную и восстановление из файла ---
 
@@ -1744,6 +2116,19 @@ async def cb_set_tz(callback: types.CallbackQuery):
     text, kb = build_tz_menu(callback.from_user.id)
     await safe_edit(callback.message, text, kb)
 
+@dp.error()
+async def on_error(event: types.ErrorEvent):
+    # Повторное нажатие той же кнопки даёт «message is not modified» — это не ошибка
+    if isinstance(event.exception, TelegramBadRequest) and "not modified" in str(event.exception):
+        if event.update.callback_query:
+            try:
+                await event.update.callback_query.answer()
+            except Exception:
+                pass
+        return True
+    logging.error(f"Необработанная ошибка: {event.exception}", exc_info=event.exception)
+    return True
+
 # ==============================================================================
 # ТОЧКА ВХОДА (MAIN)
 # ==============================================================================
@@ -1763,6 +2148,7 @@ async def main():
     # Запуск фонового воркера отправки напоминаний
     asyncio.create_task(reminder_worker(bot))
     asyncio.create_task(backup_worker())
+    asyncio.create_task(schedule_worker())
 
     # Регистрация меню команд бота в Telegram
     commands = [
@@ -1771,7 +2157,10 @@ async def main():
         BotCommand(command="notes", description="📝 Заметки"),
         BotCommand(command="panel", description="🖥 Веб-панель"),
         BotCommand(command="stats", description="📊 Статистика"),
-        BotCommand(command="goodmorning", description="🌅 Ночной дайджест"),
+        BotCommand(command="goodmorning", description="🌅 Утренняя сводка"),
+        BotCommand(command="schedule", description="🌙 Расписание сна"),
+        BotCommand(command="vips", description="⭐ VIP-контакты"),
+        BotCommand(command="disabled", description="🛑 Отключённые чаты"),
         BotCommand(command="default", description="💼 Режим: обычный"),
         BotCommand(command="busy", description="🎮 Режим: занят"),
         BotCommand(command="sleep", description="🌙 Режим: сплю"),
