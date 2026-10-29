@@ -19,6 +19,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     BotCommand,
     CallbackQuery,
+    FSInputFile,
     Message
 )
 from dotenv import load_dotenv
@@ -366,6 +367,166 @@ async def reminder_worker(bot_instance: Bot):
         await asyncio.sleep(15)
 
 # ==============================================================================
+# АВТОБЭКАП БАЗЫ В TELEGRAM
+# Диск Render стирается при каждом деплое и перезапуске. Бот хранит копию базы
+# закреплённым файлом в чате с владельцем и при старте на чистом диске восстанавливается из неё.
+# ==============================================================================
+
+BACKUP_CHAT_ID = int(os.getenv("BACKUP_CHAT_ID", 0) or 0) or MY_ID
+BACKUP_INTERVAL = 600        # раз в 10 минут, и только если в базе что-то изменилось
+BACKUP_PREFIX = "business_bot_backup"
+RESTORE_RETRIES = 10         # попыток восстановиться при старте (по одной в минуту)
+
+backup_state = {
+    "allowed": False,        # пока не восстановились — не перезаписываем хорошую копию пустой базой
+    "last_hash": None,
+    "msg_ids": [],           # последние сообщения с бэкапами (храним две)
+    "restore_attempts": 0,
+}
+backup_lock = asyncio.Lock()
+pending_restores: dict = {}  # короткий ключ -> file_id присланного файла базы
+
+def remove_quietly(path: str):
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+async def find_pinned_backup() -> Optional[Message]:
+    chat = await bot.get_chat(BACKUP_CHAT_ID)
+    pinned = chat.pinned_message
+    if pinned and pinned.document and (pinned.document.file_name or "").startswith(BACKUP_PREFIX):
+        return pinned
+    return None
+
+async def restore_from_file_id(file_id: str):
+    tmp = f"temp_restore_{secrets.token_hex(4)}.db"
+    try:
+        file = await bot.get_file(file_id)
+        await bot.download_file(file.file_path, tmp)
+        if not await asyncio.to_thread(db.validate_backup, tmp):
+            raise ValueError("файл не похож на базу бота или повреждён")
+        await asyncio.to_thread(db.restore_from, tmp)
+    finally:
+        remove_quietly(tmp)
+    backup_state["last_hash"] = await asyncio.to_thread(db.content_hash)
+
+async def make_backup(reason: str, force: bool = False) -> Optional[Message]:
+    """Шлёт копию базы в чат бэкапов и закрепляет её. None — если бэкап не нужен или запрещён"""
+    if not BACKUP_CHAT_ID:
+        return None
+    async with backup_lock:
+        if not backup_state["allowed"]:
+            return None
+        current_hash = await asyncio.to_thread(db.content_hash)
+        if not force and current_hash == backup_state["last_hash"]:
+            return None
+
+        tmp = f"temp_backup_{secrets.token_hex(4)}.db"
+        try:
+            await asyncio.to_thread(db.snapshot_to, tmp)
+            now_utc = datetime.now(timezone.utc)
+            local = now_utc.astimezone(timezone(timedelta(hours=db.get_user_tz_offset(MY_ID))))
+            sent = await bot.send_document(
+                BACKUP_CHAT_ID,
+                FSInputFile(tmp, filename=f"{BACKUP_PREFIX}_{now_utc.strftime('%Y%m%d_%H%M%S')}.db"),
+                caption=(
+                    f"💾 <b>Бэкап базы</b> · {local.strftime('%d.%m %H:%M')}\n"
+                    f"<i>{esc(reason)}. Не открепляй — по закреплённому файлу бот восстановит данные после деплоя.</i>"
+                ),
+                disable_notification=True
+            )
+        finally:
+            remove_quietly(tmp)
+
+        await bot.pin_chat_message(BACKUP_CHAT_ID, sent.message_id, disable_notification=True)
+        backup_state["last_hash"] = current_hash
+
+        # Держим две копии: свежую (закреплена) и предыдущую на всякий случай, остальные удаляем
+        ids = backup_state["msg_ids"] + [sent.message_id]
+        for old_id in ids[:-2]:
+            try:
+                await bot.delete_message(BACKUP_CHAT_ID, old_id)
+            except Exception:
+                pass
+        for old_id in ids[-2:-1]:
+            try:
+                await bot.unpin_chat_message(BACKUP_CHAT_ID, message_id=old_id)
+            except Exception:
+                pass
+        backup_state["msg_ids"] = ids[-2:]
+        logging.info(f"💾 Бэкап базы отправлен ({reason})")
+        return sent
+
+async def try_restore_on_start() -> bool:
+    """True — можно работать (восстановились или бэкапа нет), False — повторим позже"""
+    backup_state["restore_attempts"] += 1
+    try:
+        pinned = await find_pinned_backup()
+        if not pinned:
+            logging.info("💾 Закреплённого бэкапа нет — начинаем с чистой базы.")
+            backup_state["allowed"] = True
+            return True
+        await restore_from_file_id(pinned.document.file_id)
+        backup_state["msg_ids"] = [pinned.message_id]
+        backup_state["allowed"] = True
+        saved_at = pinned.date.astimezone(timezone(timedelta(hours=db.get_user_tz_offset(MY_ID))))
+        logging.info(f"♻️ База восстановлена из бэкапа от {saved_at:%d.%m %H:%M}")
+        await bot.send_message(
+            MY_ID,
+            f"♻️ <b>Данные восстановлены</b> из бэкапа от {saved_at.strftime('%d.%m %H:%M')} — "
+            f"заметки, напоминания и настройки на месте.",
+            disable_notification=True
+        )
+        return True
+    except Exception as e:
+        logging.error(f"Не удалось восстановить базу из бэкапа (попытка {backup_state['restore_attempts']}): {e}")
+        if backup_state["restore_attempts"] == RESTORE_RETRIES:
+            try:
+                await bot.send_message(
+                    MY_ID,
+                    f"⚠️ <b>Не получилось восстановить данные из бэкапа</b>\n<code>{esc(clip(str(e), 300))}</code>\n\n"
+                    "Автобэкап на паузе, чтобы не перезаписать хорошую копию пустой базой.\n"
+                    "Можно переслать мне файл бэкапа вручную или нажать /backup, чтобы сохранить текущую базу как есть.",
+                )
+            except Exception:
+                pass
+        return False
+
+async def init_backup():
+    if not BACKUP_CHAT_ID:
+        logging.warning("💾 MY_TELEGRAM_ID не задан — автобэкап базы выключен.")
+        return
+    if db.DB_EXISTED_AT_START:
+        # Локальная база на месте (локальный запуск или перезапуск без потери диска) — восстанавливать нечего
+        backup_state["allowed"] = True
+        try:
+            pinned = await find_pinned_backup()
+            if pinned:
+                backup_state["msg_ids"] = [pinned.message_id]
+        except Exception as e:
+            logging.warning(f"Не удалось прочитать закреплённый бэкап: {e}")
+        return
+    await try_restore_on_start()
+
+async def backup_worker():
+    logging.info("💾 Воркер автобэкапа запущен.")
+    last_backup = time.time()
+    while True:
+        await asyncio.sleep(60)
+        try:
+            if not backup_state["allowed"]:
+                if backup_state["restore_attempts"] < RESTORE_RETRIES:
+                    await try_restore_on_start()
+                continue
+            if time.time() - last_backup >= BACKUP_INTERVAL:
+                last_backup = time.time()
+                await make_backup("Автобэкап")
+        except Exception as e:
+            logging.error(f"Ошибка в цикле backup_worker: {e}")
+
+# ==============================================================================
 # ГЛАВНОЕ МЕНЮ, РЕЖИМЫ, СПРАВКА, СТАТИСТИКА
 # ==============================================================================
 
@@ -577,6 +738,10 @@ HELP_TEXT = (
     "/unban <code>ID</code> — убрать из игнора\n\n"
     "🖥 <b>Веб-панель</b>\n"
     "/panel — личная ссылка на панель с лентой ответов ИИ\n\n"
+    "💾 <b>Бэкап</b>\n"
+    "База сама сохраняется сюда закреплённым файлом (раз в 10 минут при изменениях и перед деплоем) "
+    "и восстанавливается после перезапуска на Render.\n"
+    "/backup — сохранить прямо сейчас · пришли файл <code>.db</code> — восстановлю из него\n\n"
     "✨ <code>~текст</code> в любом чате — перепишу сообщение мило"
 )
 
@@ -1131,6 +1296,84 @@ async def process_incoming_text(message: types.Message, raw_text: str):
             reply = "Записал! Пришли задачу со временем («завтра в 14:00 отчёт») или мысль для заметки."
         await message.answer(f"🤖 {esc(reply)}")
 
+# --- Бэкап вручную и восстановление из файла ---
+
+@dp.message(Command("backup"))
+async def cmd_backup(message: types.Message):
+    if not backup_state["allowed"]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="💾 Всё равно сохранить", callback_data="backup_force")
+        ]])
+        await message.answer(
+            "⚠️ <b>Автобэкап на паузе</b>: при запуске не удалось восстановить данные из прошлого бэкапа.\n"
+            "Если сохранить сейчас, закреплённой станет текущая (возможно, пустая) база. "
+            "Предыдущий файл останется в чате.",
+            reply_markup=kb
+        )
+        return
+    sent = await make_backup("Бэкап по команде /backup", force=True)
+    if not sent:
+        await message.answer("⚠️ Не удалось сделать бэкап — проверь, что задан MY_TELEGRAM_ID.")
+
+@dp.callback_query(F.data == "backup_force")
+async def cb_backup_force(callback: types.CallbackQuery):
+    backup_state["allowed"] = True
+    backup_state["restore_attempts"] = RESTORE_RETRIES  # больше не пытаемся восстановиться автоматически
+    await callback.answer("Сохраняю текущую базу")
+    await make_backup("Бэкап по команде /backup", force=True)
+    await safe_edit(callback.message, "💾 <b>Автобэкап снова работает</b>, текущая база сохранена.")
+
+@dp.message(F.chat.type == "private", F.document)
+async def handle_backup_file(message: types.Message):
+    """Присланный файл .db — предлагаем восстановить из него базу"""
+    name = (message.document.file_name or "").lower()
+    if not name.endswith(".db"):
+        # Обычный файл: как и раньше, разбираем подпись как задачу/заметку
+        if message.caption:
+            await process_incoming_text(message, message.caption)
+        else:
+            await message.answer("💡 Пришли текстом или перешли сообщение с описанием задачи / заметки.")
+        return
+    key = secrets.token_hex(6)
+    pending_restores[key] = message.document.file_id
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="♻️ Восстановить", callback_data=f"restore_db_{key}"),
+        InlineKeyboardButton(text="✖️ Отмена", callback_data=f"restore_cancel_{key}")
+    ]])
+    await message.answer(
+        f"♻️ <b>Восстановить базу из «{esc(message.document.file_name)}»?</b>\n"
+        "Текущие заметки, напоминания и настройки заменятся содержимым файла. "
+        "Перед этим я сохраню текущую базу отдельным бэкапом.",
+        reply_markup=kb
+    )
+
+@dp.callback_query(F.data.startswith("restore_cancel_"))
+async def cb_restore_cancel(callback: types.CallbackQuery):
+    pending_restores.pop(callback.data.replace("restore_cancel_", ""), None)
+    await callback.answer("Отменено")
+    await safe_edit(callback.message, "✖️ Восстановление отменено.")
+
+@dp.callback_query(F.data.startswith("restore_db_"))
+async def cb_restore_db(callback: types.CallbackQuery):
+    file_id = pending_restores.pop(callback.data.replace("restore_db_", ""), None)
+    if not file_id:
+        await callback.answer("Кнопка устарела — пришли файл ещё раз.", show_alert=True)
+        return
+    await callback.answer("Восстанавливаю…")
+    try:
+        await make_backup("Копия перед восстановлением из файла", force=True)
+    except Exception as e:
+        logging.warning(f"Не удалось сохранить копию перед восстановлением: {e}")
+    try:
+        await restore_from_file_id(file_id)
+    except Exception as e:
+        await safe_edit(callback.message, f"⚠️ <b>Не получилось восстановить</b>\n<code>{esc(clip(str(e), 300))}</code>")
+        return
+    backup_state["allowed"] = True
+    backup_state["restore_attempts"] = RESTORE_RETRIES
+    await safe_edit(callback.message, "♻️ <b>База восстановлена из файла.</b> Закрепляю её как актуальный бэкап.")
+    await make_backup("Восстановлено из присланного файла", force=True)
+
 @dp.message(F.chat.type == "private")
 async def handle_private_message(message: types.Message):
     """Прием любого текста или пересланного сообщения в ЛС бота"""
@@ -1280,11 +1523,15 @@ async def main():
     if not MY_ID:
         logging.warning("⚠️ MY_TELEGRAM_ID не задан — бот никому не ответит в ЛС.")
 
+    # Восстановление базы из бэкапа — до запуска панели и воркеров, чтобы они сразу видели данные
+    await init_backup()
+
     # Запуск встроенного веб-сервера для Render
     await start_web_server()
 
     # Запуск фонового воркера отправки напоминаний
     asyncio.create_task(reminder_worker(bot))
+    asyncio.create_task(backup_worker())
 
     # Регистрация меню команд бота в Telegram
     commands = [
@@ -1299,6 +1546,7 @@ async def main():
         BotCommand(command="sleep", description="🌙 Режим: сплю"),
         BotCommand(command="ignore_all", description="🚫 Режим: не беспокоить"),
         BotCommand(command="timezone", description="🌍 Часовой пояс"),
+        BotCommand(command="backup", description="💾 Бэкап базы сейчас"),
         BotCommand(command="help", description="📖 Справка"),
     ]
     try:
@@ -1312,7 +1560,16 @@ async def main():
         logging.warning(f"Не удалось удалить webhook: {e}")
 
     logging.info("🚀 Бизнес-Ассистент с Модулем 3 успешно запущен!")
-    await dp.start_polling(bot)
+    try:
+        # Сессию закрываем сами: после остановки polling ещё нужно отправить финальный бэкап
+        await dp.start_polling(bot, close_bot_session=False)
+    finally:
+        # Render шлёт SIGTERM перед деплоем/перезапуском — успеваем сохранить последние изменения
+        try:
+            await asyncio.wait_for(make_backup("Бэкап перед выключением"), timeout=20)
+        except Exception as e:
+            logging.error(f"Не удалось сделать бэкап при выключении: {e}")
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

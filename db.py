@@ -1,3 +1,5 @@
+import hashlib
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -575,5 +577,59 @@ get_all_notes_count = get_notes_categories_stats
 get_notes_by_category = get_notes_by_cat
 delete_note = delete_note_by_id
 clear_category = clear_notes_by_cat
+
+# ==============================================================================
+# БЭКАП И ВОССТАНОВЛЕНИЕ (диск Render стирается при каждом деплое/перезапуске)
+# ==============================================================================
+
+def snapshot_to(path: str):
+    """Согласованная копия базы (учитывает WAL), безопасна при работающем боте"""
+    src = sqlite3.connect(DB_NAME, timeout=15.0)
+    dst = sqlite3.connect(path)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+
+def content_hash() -> str:
+    """Хэш содержимого (а не байтов файла) — чтобы не слать бэкап, если ничего не менялось"""
+    h = hashlib.sha256()
+    conn = sqlite3.connect(DB_NAME, timeout=15.0)
+    try:
+        for line in conn.iterdump():
+            h.update(line.encode("utf-8"))
+    finally:
+        conn.close()
+    return h.hexdigest()
+
+def validate_backup(path: str) -> bool:
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                return False
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            return {"settings", "reminders", "notes"} <= tables
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
+
+def restore_from(path: str):
+    """Заменяет текущую базу содержимым файла бэкапа и догоняет схему до текущей версии"""
+    global _status_cache
+    src = sqlite3.connect(path)
+    dst = sqlite3.connect(DB_NAME, timeout=15.0)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    _status_cache = None
+    init_db()  # бэкап мог быть сделан старой версией — создаём недостающие таблицы
+
+# Файла базы не было до запуска → это свежий диск (деплой/перезапуск на Render), нужна попытка восстановления
+DB_EXISTED_AT_START = os.path.exists(DB_NAME)
 
 init_db()
