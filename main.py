@@ -119,6 +119,10 @@ class OwnerOnlyMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         if user and MY_ID and user.id == MY_ID:
             return await handler(event, data)
+        # Служебные сообщения (например, «бот закрепил файл» после автобэкапа) и сообщения ботов
+        # не от человека — молча пропускаем, иначе бот ответит отказом сам себе
+        if (user and user.is_bot) or (isinstance(event, Message) and event.pinned_message):
+            return None
         if isinstance(event, Message) and event.chat.type == "private":
             await event.answer(
                 "🔒 <b>Это личный ИИ-ассистент.</b>\n"
