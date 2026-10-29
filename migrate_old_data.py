@@ -19,6 +19,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -26,6 +27,10 @@ from urllib.parse import urlsplit
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKUP_PREFIX = "business_bot_backup"  # как в main.py — по этому префиксу бот ищет бэкап
+
+
+def clip_reason(reason: str) -> str:
+    return reason if len(reason) <= 80 else reason[:79] + "…"
 
 
 def parse_panel_link(link: str):
@@ -37,19 +42,29 @@ def parse_panel_link(link: str):
     return f"{parts.scheme}://{parts.netloc}", token
 
 
-def fetch_old_data(base_url: str, token: str) -> dict:
+def fetch_old_data(base_url: str, token: str, attempts: int = 5) -> dict:
     request = urllib.request.Request(f"{base_url}/api/data", headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            sys.exit("⚠️ Ключ не подошёл (401). Возьми свежую ссылку командой /panel.")
-        if e.code == 429:
-            sys.exit("⚠️ Слишком много попыток (429). Подожди 10 минут.")
-        sys.exit(f"⚠️ Сервер ответил ошибкой {e.code}.")
-    except urllib.error.URLError as e:
-        sys.exit(f"⚠️ Не удалось связаться с ботом: {e.reason}. Если он спит на Render — открой ссылку в браузере и повтори.")
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                sys.exit("⚠️ Ключ не подошёл (401). Возьми свежую ссылку командой /panel.")
+            if e.code == 429:
+                sys.exit("⚠️ Слишком много попыток (429). Подожди 10 минут.")
+            if e.code < 500 or attempt == attempts:
+                sys.exit(f"⚠️ Сервер ответил ошибкой {e.code}.")
+            reason = f"ошибка {e.code}"
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            if attempt == attempts:
+                sys.exit(f"⚠️ Не удалось связаться с ботом: {getattr(e, 'reason', e)}. "
+                         "Проверь, что включён VPN/прокси, открой ссылку в браузере и повтори.")
+            reason = str(getattr(e, "reason", e))
+        # Бесплатный Render усыпляет бота: первый запрос будит его и может оборваться
+        print(f"⏳ Попытка {attempt}/{attempts} не удалась ({clip_reason(reason)}), бот, возможно, просыпается — жду 15 сек…")
+        time.sleep(15)
     if not data.get("ok"):
         sys.exit(f"⚠️ API вернул ошибку: {data.get('error')}")
     return data
