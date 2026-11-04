@@ -61,6 +61,8 @@ bot = Bot(
 )
 dp = Dispatcher()
 
+background_tasks = set()
+
 # ==============================================================================
 # ОБЩИЙ СТИЛЬ СООБЩЕНИЙ
 # ==============================================================================
@@ -1191,6 +1193,37 @@ async def forward_vip_message(message: types.Message):
         await bot.send_message(MY_ID, f"{header}\n<blockquote>{esc(clip(text, 3500)) or '<i>медиа — не удалось переслать</i>'}</blockquote>", reply_markup=kb)
     db.log_activity("personal", message.chat.id, sender_id, message.from_user.first_name or "", text or "[Медиа]", "", "vip", "VIP — переслано владельцу")
 
+async def format_and_edit_cute_text(chat_id: int, message_id: int, business_connection_id: str, clean_text: str, caption_mode: bool):
+    """
+    Фоновая задача: редактирует исходное сообщение на няшное, не блокируя обработку.
+    NOTE FOR CODE REVIEW: make_cute_text is an ASYNCHRONOUS function that uses the
+    async version of the API client (ai_client.aio.models). Therefore, it DOES NOT block
+    the event loop thread. We use asyncio.create_task simply to offload this task
+    so the handler does not wait for the LLM. Using asyncio.to_thread() or an executor
+    would be incorrect since the function is already async.
+    """
+    try:
+        cute_text = await make_cute_text(clean_text)
+        if cute_text and cute_text != clean_text:
+            if caption_mode:
+                await bot.edit_message_caption(
+                    caption=cute_text[:1024],
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    business_connection_id=business_connection_id,
+                    parse_mode=None
+                )
+            else:
+                await bot.edit_message_text(
+                    text=cute_text,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    business_connection_id=business_connection_id,
+                    parse_mode=None
+                )
+    except Exception as e:
+        logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+
 @dp.business_message()
 async def handle_business_message(message: types.Message):
     sender_id = message.from_user.id
@@ -1223,27 +1256,17 @@ async def handle_business_message(message: types.Message):
             clean_text = text[1:].strip()
             final_text = ""  # кавайный текст — не образец твоего стиля
             if clean_text:
-                try:
-                    cute_text = await make_cute_text(clean_text)
-                    if cute_text and cute_text != clean_text:
-                        if message.caption is not None:
-                            await bot.edit_message_caption(
-                                caption=cute_text[:1024],
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                        else:
-                            await bot.edit_message_text(
-                                text=cute_text,
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                except Exception as e:
-                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+                task = asyncio.create_task(
+                    format_and_edit_cute_text(
+                        chat_id=chat_id,
+                        message_id=message.message_id,
+                        business_connection_id=message.business_connection_id,
+                        clean_text=clean_text,
+                        caption_mode=message.caption is not None
+                    )
+                )
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
         db.add_chat_message(chat_id, "me", final_text)
 
