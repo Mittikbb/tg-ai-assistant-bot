@@ -1,24 +1,44 @@
 import hashlib
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+_local = threading.local()
+
+def _get_connection():
+    if not hasattr(_local, "conn"):
+        _local.conn = sqlite3.connect(DB_NAME, timeout=15.0, isolation_level=None)
+        _local.conn.execute("PRAGMA journal_mode=WAL;")
+        _local.conn.execute("PRAGMA busy_timeout=5000;")
+        _local.transaction_depth = 0
+    return _local.conn
+
 @contextmanager
 def get_cursor(commit: bool = False):
-    conn = sqlite3.connect(DB_NAME, timeout=15.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA busy_timeout=5000;")
+    conn = _get_connection()
+    _local.transaction_depth += 1
+    sp_name = f"sp_{_local.transaction_depth}"
+
+    conn.execute(f"SAVEPOINT {sp_name}")
     cursor = conn.cursor()
     try:
         yield cursor
         if commit:
-            conn.commit()
+            conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+        else:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+            conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {sp_name}")
+        conn.execute(f"RELEASE SAVEPOINT {sp_name}")
+        raise
     finally:
-        conn.close()
+        _local.transaction_depth -= 1
 
 def init_db():
     with get_cursor(commit=True) as cursor:
