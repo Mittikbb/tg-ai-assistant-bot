@@ -7,6 +7,21 @@ from typing import Optional
 
 DB_NAME = "business_bot.db"
 
+from functools import wraps
+
+
+def with_cursor(commit: bool = False):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            with get_cursor(commit=commit) as cursor:
+                return func(cursor, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 @contextmanager
 def get_cursor(commit: bool = False):
     conn = sqlite3.connect(DB_NAME, timeout=15.0)
@@ -20,35 +35,36 @@ def get_cursor(commit: bool = False):
     finally:
         conn.close()
 
-def init_db():
-    with get_cursor(commit=True) as cursor:
-        # --- Таблицы Бизнес-Ассистента (Модули 1 и 2) ---
-        cursor.execute("""
+
+@with_cursor(commit=True)
+def init_db(cursor):
+    # --- Таблицы Бизнес-Ассистента (Модули 1 и 2) ---
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
             )
         """)
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS blacklist (
                 user_id INTEGER PRIMARY KEY
             )
         """)
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS aggressive_users (
                 user_id INTEGER PRIMARY KEY
             )
         """)
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS disabled_chats (
                 chat_id INTEGER PRIMARY KEY
             )
         """)
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS night_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sender_name TEXT,
@@ -57,7 +73,7 @@ def init_db():
             )
         """)
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS users_profiles (
                 user_id INTEGER PRIMARY KEY,
                 user_name TEXT,
@@ -65,7 +81,7 @@ def init_db():
             )
         """)
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS stats_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
@@ -73,10 +89,12 @@ def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('status', 'default')")
+    cursor.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('status', 'default')"
+    )
 
-        # Лента действий ассистента (выгружается в веб-панель)
-        cursor.execute("""
+    # Лента действий ассистента (выгружается в веб-панель)
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS ai_activity (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind TEXT NOT NULL,
@@ -91,15 +109,15 @@ def init_db():
             )
         """)
 
-        # --- Таблицы Модуля 3 (Напоминания и Заметки) ---
-        cursor.execute("""
+    # --- Таблицы Модуля 3 (Напоминания и Заметки) ---
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id INTEGER PRIMARY KEY,
                 timezone_offset INTEGER DEFAULT 3
             )
         """)
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -112,10 +130,14 @@ def init_db():
                 source_info TEXT DEFAULT ''
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_reminders_status_utc ON reminders(status, remind_at_utc)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id, status)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reminders_status_utc ON reminders(status, remind_at_utc)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id, status)"
+    )
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -125,10 +147,12 @@ def init_db():
                 is_archived INTEGER DEFAULT 0
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_cat ON notes(user_id, category, is_archived)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notes_user_cat ON notes(user_id, category, is_archived)"
+    )
 
-        # --- История бизнес-чатов (контекст для ИИ, «Мой стиль», «Что я пропустил?») ---
-        cursor.execute("""
+    # --- История бизнес-чатов (контекст для ИИ, «Мой стиль», «Что я пропустил?») ---
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
@@ -137,10 +161,14 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_chat ON chat_history(chat_id, id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_role ON chat_history(role, id)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_history_chat ON chat_history(chat_id, id)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_history_role ON chat_history(role, id)"
+    )
 
-        cursor.execute("""
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS known_chats (
                 chat_id INTEGER PRIMARY KEY,
                 name TEXT,
@@ -150,8 +178,8 @@ def init_db():
             )
         """)
 
-        # Черновики ответов на личные сообщения (кнопка «Отправить»)
-        cursor.execute("""
+    # Черновики ответов на личные сообщения (кнопка «Отправить»)
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS drafts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
@@ -163,20 +191,24 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_drafts_owner_msg ON drafts(owner_msg_id)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_drafts_owner_msg ON drafts(owner_msg_id)"
+    )
 
-        # VIP-контакты: бот им не отвечает, а сразу пересылает сообщения владельцу
-        cursor.execute("""
+    # VIP-контакты: бот им не отвечает, а сразу пересылает сообщения владельцу
+    cursor.execute("""
             CREATE TABLE IF NOT EXISTS vip_users (
                 user_id INTEGER PRIMARY KEY
             )
         """)
+
 
 _status_cache = None
 
 # ==============================================================================
 # ФУНКЦИИ БИЗНЕС-АССИСТЕНТА
 # ==============================================================================
+
 
 def get_status() -> str:
     global _status_cache
@@ -189,140 +221,219 @@ def get_status() -> str:
     _status_cache = row[0] if row else "default"
     return _status_cache
 
-def set_status(status_name: str):
+
+@with_cursor(commit=True)
+def set_status(cursor, status_name: str):
     global _status_cache
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
+    cursor.execute("UPDATE settings SET value = ? WHERE key = 'status'", (status_name,))
     _status_cache = status_name
 
-def is_blacklisted(user_id: int) -> bool:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT user_id FROM blacklist WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+
+@with_cursor()
+def is_blacklisted(cursor, user_id: int) -> bool:
+    cursor.execute("SELECT user_id FROM blacklist WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
     return row is not None
 
-def add_to_blacklist(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)", (user_id,))
 
-def remove_from_blacklist(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
+@with_cursor(commit=True)
+def add_to_blacklist(cursor, user_id: int):
+    cursor.execute("INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)", (user_id,))
 
-def is_aggressive(user_id: int) -> bool:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT user_id FROM aggressive_users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+
+@with_cursor(commit=True)
+def remove_from_blacklist(cursor, user_id: int):
+    cursor.execute("DELETE FROM blacklist WHERE user_id = ?", (user_id,))
+
+
+@with_cursor()
+def is_aggressive(cursor, user_id: int) -> bool:
+    cursor.execute("SELECT user_id FROM aggressive_users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
     return row is not None
 
-def add_to_aggressive(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR IGNORE INTO aggressive_users (user_id) VALUES (?)", (user_id,))
 
-def remove_from_aggressive(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM aggressive_users WHERE user_id = ?", (user_id,))
+@with_cursor(commit=True)
+def add_to_aggressive(cursor, user_id: int):
+    cursor.execute(
+        "INSERT OR IGNORE INTO aggressive_users (user_id) VALUES (?)", (user_id,)
+    )
 
-def is_chat_disabled(chat_id: int) -> bool:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT chat_id FROM disabled_chats WHERE chat_id = ?", (chat_id,))
-        row = cursor.fetchone()
+
+@with_cursor(commit=True)
+def remove_from_aggressive(cursor, user_id: int):
+    cursor.execute("DELETE FROM aggressive_users WHERE user_id = ?", (user_id,))
+
+
+@with_cursor()
+def is_chat_disabled(cursor, chat_id: int) -> bool:
+    cursor.execute("SELECT chat_id FROM disabled_chats WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
     return row is not None
 
-def disable_chat(chat_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR IGNORE INTO disabled_chats (chat_id) VALUES (?)", (chat_id,))
 
-def enable_chat(chat_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM disabled_chats WHERE chat_id = ?", (chat_id,))
+@with_cursor(commit=True)
+def disable_chat(cursor, chat_id: int):
+    cursor.execute(
+        "INSERT OR IGNORE INTO disabled_chats (chat_id) VALUES (?)", (chat_id,)
+    )
 
-def save_night_message(sender_name: str, text: str):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT INTO night_logs (sender_name, message_text) VALUES (?, ?)", (sender_name, text))
 
-def pop_night_messages() -> list:
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("SELECT sender_name, message_text FROM night_logs")
-        rows = cursor.fetchall()
-        cursor.execute("DELETE FROM night_logs")
+@with_cursor(commit=True)
+def enable_chat(cursor, chat_id: int):
+    cursor.execute("DELETE FROM disabled_chats WHERE chat_id = ?", (chat_id,))
+
+
+@with_cursor(commit=True)
+def save_night_message(cursor, sender_name: str, text: str):
+    cursor.execute(
+        "INSERT INTO night_logs (sender_name, message_text) VALUES (?, ?)",
+        (sender_name, text),
+    )
+
+
+@with_cursor(commit=True)
+def pop_night_messages(cursor) -> list:
+    cursor.execute("SELECT sender_name, message_text FROM night_logs")
+    rows = cursor.fetchall()
+    cursor.execute("DELETE FROM night_logs")
     return rows
 
-def get_user_profile(user_id: int) -> str:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT notes FROM users_profiles WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+
+@with_cursor()
+def get_user_profile(cursor, user_id: int) -> str:
+    cursor.execute("SELECT notes FROM users_profiles WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
     return row[0] if row and row[0] else ""
 
-def update_user_profile(user_id: int, user_name: str, new_note: str):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("""
+
+@with_cursor(commit=True)
+def update_user_profile(cursor, user_id: int, user_name: str, new_note: str):
+    cursor.execute(
+        """
             INSERT INTO users_profiles (user_id, user_name, notes)
             VALUES (?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 user_name = excluded.user_name,
                 notes = excluded.notes
-        """, (user_id, user_name, new_note))
+        """,
+        (user_id, user_name, new_note),
+    )
 
-def log_stat(user_id: int, category: str):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT INTO stats_log (user_id, category) VALUES (?, ?)", (user_id, category))
+
+@with_cursor(commit=True)
+def log_stat(cursor, user_id: int, category: str):
+    cursor.execute(
+        "INSERT INTO stats_log (user_id, category) VALUES (?, ?)", (user_id, category)
+    )
+
 
 ACTIVITY_KEEP = 500
 
-def log_activity(kind: str, chat_id: int = None, sender_id: int = None, sender_name: str = "",
-                 incoming: str = "", reply: str = "", category: str = "", summary: str = ""):
+
+@with_cursor(commit=True)
+def log_activity(
+    cursor,
+    kind: str,
+    chat_id: int = None,
+    sender_id: int = None,
+    sender_name: str = "",
+    incoming: str = "",
+    reply: str = "",
+    category: str = "",
+    summary: str = "",
+):
     """kind: reply | personal | status | tone | screenshot"""
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("""
+    cursor.execute(
+        """
             INSERT INTO ai_activity (kind, chat_id, sender_id, sender_name, incoming, reply, category, summary, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (kind, chat_id, sender_id, sender_name, incoming, reply, category, summary, created_at))
-        cursor.execute(
-            "DELETE FROM ai_activity WHERE id <= (SELECT MAX(id) FROM ai_activity) - ?",
-            (ACTIVITY_KEEP,)
-        )
+        """,
+        (
+            kind,
+            chat_id,
+            sender_id,
+            sender_name,
+            incoming,
+            reply,
+            category,
+            summary,
+            created_at,
+        ),
+    )
+    cursor.execute(
+        "DELETE FROM ai_activity WHERE id <= (SELECT MAX(id) FROM ai_activity) - ?",
+        (ACTIVITY_KEEP,),
+    )
 
-def get_recent_activity(limit: int = 60):
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_recent_activity(cursor, limit: int = 60):
+    cursor.execute(
+        """
             SELECT id, kind, chat_id, sender_id, sender_name, incoming, reply, category, summary, created_at
             FROM ai_activity
             ORDER BY id DESC
             LIMIT ?
-        """, (limit,))
-        cols = ["id", "kind", "chat_id", "sender_id", "sender_name", "incoming", "reply", "category", "summary", "created_at"]
-        return [dict(zip(cols, r)) for r in cursor.fetchall()]
+        """,
+        (limit,),
+    )
+    cols = [
+        "id",
+        "kind",
+        "chat_id",
+        "sender_id",
+        "sender_name",
+        "incoming",
+        "reply",
+        "category",
+        "summary",
+        "created_at",
+    ]
+    return [dict(zip(cols, r)) for r in cursor.fetchall()]
 
-def get_activity_today_counts() -> dict:
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
-    with get_cursor() as cursor:
-        cursor.execute("SELECT kind, COUNT(*) FROM ai_activity WHERE created_at >= ? GROUP BY kind", (since,))
-        return dict(cursor.fetchall())
 
-def clear_activity():
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM ai_activity")
+@with_cursor()
+def get_activity_today_counts(cursor) -> dict:
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    cursor.execute(
+        "SELECT kind, COUNT(*) FROM ai_activity WHERE created_at >= ? GROUP BY kind",
+        (since,),
+    )
+    return dict(cursor.fetchall())
 
-def get_setting(key: str) -> Optional[str]:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-        row = cursor.fetchone()
+
+@with_cursor(commit=True)
+def clear_activity(cursor):
+    cursor.execute("DELETE FROM ai_activity")
+
+
+@with_cursor()
+def get_setting(cursor, key: str) -> Optional[str]:
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
     return row[0] if row else None
 
-def set_setting(key: str, value: str):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
 
-def get_stats_summary() -> dict:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT COUNT(*) FROM stats_log")
-        total = cursor.fetchone()[0]
+@with_cursor(commit=True)
+def set_setting(cursor, key: str, value: str):
+    cursor.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
+    )
 
-        cursor.execute("SELECT category, COUNT(*) FROM stats_log GROUP BY category")
-        by_cat = dict(cursor.fetchall())
+
+@with_cursor()
+def get_stats_summary(cursor) -> dict:
+    cursor.execute("SELECT COUNT(*) FROM stats_log")
+    total = cursor.fetchone()[0]
+
+    cursor.execute("SELECT category, COUNT(*) FROM stats_log GROUP BY category")
+    by_cat = dict(cursor.fetchall())
     return {"total": total, "categories": by_cat}
+
 
 # ==============================================================================
 # ФУНКЦИИ МОДУЛЯ 3 (НАПОМИНАНИЯ И ЗАМЕТКИ)
@@ -330,82 +441,133 @@ def get_stats_summary() -> dict:
 
 DEFAULT_TIMEZONE_OFFSET = 3
 
-def get_user_tz_offset(user_id: int) -> int:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT timezone_offset FROM user_settings WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
+
+@with_cursor()
+def get_user_tz_offset(cursor, user_id: int) -> int:
+    cursor.execute(
+        "SELECT timezone_offset FROM user_settings WHERE user_id = ?", (user_id,)
+    )
+    row = cursor.fetchone()
     return row[0] if row is not None else DEFAULT_TIMEZONE_OFFSET
 
-def set_user_tz_offset(user_id: int, offset: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR REPLACE INTO user_settings (user_id, timezone_offset) VALUES (?, ?)", (user_id, offset))
+
+@with_cursor(commit=True)
+def set_user_tz_offset(cursor, user_id: int, offset: int):
+    cursor.execute(
+        "INSERT OR REPLACE INTO user_settings (user_id, timezone_offset) VALUES (?, ?)",
+        (user_id, offset),
+    )
+
 
 # --- Напоминания ---
-def add_reminder(user_id: int, chat_id: int, text: str, remind_at_utc: str, remind_at_local: str, source_info: str = "") -> int:
+@with_cursor(commit=True)
+def add_reminder(
+    cursor,
+    user_id: int,
+    chat_id: int,
+    text: str,
+    remind_at_utc: str,
+    remind_at_local: str,
+    source_info: str = "",
+) -> int:
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("""
+    cursor.execute(
+        """
             INSERT INTO reminders (user_id, chat_id, text, remind_at_utc, remind_at_local, created_at, status, source_info)
             VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-        """, (user_id, chat_id, text, remind_at_utc, remind_at_local, created_at, source_info))
-        return cursor.lastrowid
+        """,
+        (
+            user_id,
+            chat_id,
+            text,
+            remind_at_utc,
+            remind_at_local,
+            created_at,
+            source_info,
+        ),
+    )
+    return cursor.lastrowid
 
-def get_active_reminders(user_id: int):
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_active_reminders(cursor, user_id: int):
+    cursor.execute(
+        """
             SELECT id, text, remind_at_local, remind_at_utc, source_info
             FROM reminders
             WHERE user_id = ? AND status = 'pending'
             ORDER BY remind_at_utc ASC
-        """, (user_id,))
-        rows = cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "text": r[1],
-                "remind_at_local": r[2],
-                "remind_at_utc": r[3],
-                "source_info": r[4]
-            }
-            for r in rows
-        ]
-
-def get_reminder_by_id(rem_id: int):
-    with get_cursor() as cursor:
-        cursor.execute("SELECT id, user_id, chat_id, text, remind_at_local, remind_at_utc, status, source_info FROM reminders WHERE id = ?", (rem_id,))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {
-            "id": row[0],
-            "user_id": row[1],
-            "chat_id": row[2],
-            "text": row[3],
-            "remind_at_local": row[4],
-            "remind_at_utc": row[5],
-            "status": row[6],
-            "source_info": row[7]
+        """,
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    return [
+        {
+            "id": r[0],
+            "text": r[1],
+            "remind_at_local": r[2],
+            "remind_at_utc": r[3],
+            "source_info": r[4],
         }
+        for r in rows
+    ]
 
-def set_reminder_status(rem_id: int, status: str):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("UPDATE reminders SET status = ? WHERE id = ?", (status, rem_id))
 
-def mark_reminder_completed(rem_id: int, user_id: Optional[int] = None):
-    with get_cursor(commit=True) as cursor:
-        if user_id:
-            cursor.execute("UPDATE reminders SET status = 'completed' WHERE id = ? AND user_id = ?", (rem_id, user_id))
-        else:
-            cursor.execute("UPDATE reminders SET status = 'completed' WHERE id = ?", (rem_id,))
+@with_cursor()
+def get_reminder_by_id(cursor, rem_id: int):
+    cursor.execute(
+        "SELECT id, user_id, chat_id, text, remind_at_local, remind_at_utc, status, source_info FROM reminders WHERE id = ?",
+        (rem_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "chat_id": row[2],
+        "text": row[3],
+        "remind_at_local": row[4],
+        "remind_at_utc": row[5],
+        "status": row[6],
+        "source_info": row[7],
+    }
 
-def delete_reminder(rem_id: int, user_id: Optional[int] = None):
-    with get_cursor(commit=True) as cursor:
-        if user_id:
-            cursor.execute("UPDATE reminders SET status = 'deleted' WHERE id = ? AND user_id = ?", (rem_id, user_id))
-        else:
-            cursor.execute("UPDATE reminders SET status = 'deleted' WHERE id = ?", (rem_id,))
 
-def snooze_reminder_by_id(rem_id: int, minutes: int, tz_offset: int, user_id: Optional[int] = None):
+@with_cursor(commit=True)
+def set_reminder_status(cursor, rem_id: int, status: str):
+    cursor.execute("UPDATE reminders SET status = ? WHERE id = ?", (status, rem_id))
+
+
+@with_cursor(commit=True)
+def mark_reminder_completed(cursor, rem_id: int, user_id: Optional[int] = None):
+    if user_id:
+        cursor.execute(
+            "UPDATE reminders SET status = 'completed' WHERE id = ? AND user_id = ?",
+            (rem_id, user_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE reminders SET status = 'completed' WHERE id = ?", (rem_id,)
+        )
+
+
+@with_cursor(commit=True)
+def delete_reminder(cursor, rem_id: int, user_id: Optional[int] = None):
+    if user_id:
+        cursor.execute(
+            "UPDATE reminders SET status = 'deleted' WHERE id = ? AND user_id = ?",
+            (rem_id, user_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE reminders SET status = 'deleted' WHERE id = ?", (rem_id,)
+        )
+
+
+def snooze_reminder_by_id(
+    rem_id: int, minutes: int, tz_offset: int, user_id: Optional[int] = None
+):
     rem = get_reminder_by_id(rem_id)
     # Переносить можно только своё и только ещё живое (ожидающее или уже сработавшее) напоминание
     if not rem or rem["status"] not in ("pending", "sent"):
@@ -421,44 +583,54 @@ def snooze_reminder_by_id(rem_id: int, minutes: int, tz_offset: int, user_id: Op
     local_str = new_local.strftime("%Y-%m-%d %H:%M:%S")
 
     with get_cursor(commit=True) as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE reminders
             SET remind_at_utc = ?, remind_at_local = ?, status = 'pending'
             WHERE id = ?
-        """, (utc_str, local_str, rem_id))
+        """,
+            (utc_str, local_str, rem_id),
+        )
     return new_local, utc_str
+
 
 def snooze_reminder(rem_id: int, user_id: int, minutes: int = 15):
     tz = get_user_tz_offset(user_id)
     new_local, _ = snooze_reminder_by_id(rem_id, minutes, tz, user_id)
     return new_local
 
-def get_due_reminders(current_utc_str: Optional[str] = None):
+
+@with_cursor()
+def get_due_reminders(cursor, current_utc_str: Optional[str] = None):
     if not current_utc_str:
         current_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    with get_cursor() as cursor:
-        cursor.execute("""
+    cursor.execute(
+        """
             SELECT id, user_id, chat_id, text, remind_at_local, source_info
             FROM reminders
             WHERE status = 'pending' AND remind_at_utc <= ?
             ORDER BY remind_at_utc ASC
-        """, (current_utc_str,))
-        rows = cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "user_id": r[1],
-                "chat_id": r[2],
-                "text": r[3],
-                "remind_at_local": r[4],
-                "source_info": r[5]
-            }
-            for r in rows
-        ]
+        """,
+        (current_utc_str,),
+    )
+    rows = cursor.fetchall()
+    return [
+        {
+            "id": r[0],
+            "user_id": r[1],
+            "chat_id": r[2],
+            "text": r[3],
+            "remind_at_local": r[4],
+            "source_info": r[5],
+        }
+        for r in rows
+    ]
 
-def mark_reminder_sent(rem_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("UPDATE reminders SET status = 'sent' WHERE id = ?", (rem_id,))
+
+@with_cursor(commit=True)
+def mark_reminder_sent(cursor, rem_id: int):
+    cursor.execute("UPDATE reminders SET status = 'sent' WHERE id = ?", (rem_id,))
+
 
 # --- Заметки ---
 NOTE_CATEGORIES = ["Учеба", "Покупки", "Софт/VPN", "Идеи", "Другое"]
@@ -467,8 +639,9 @@ CATEGORY_EMOJIS = {
     "Покупки": "🛒",
     "Софт/VPN": "💻",
     "Идеи": "💡",
-    "Другое": "📌"
+    "Другое": "📌",
 }
+
 
 def normalize_category(cat: str) -> str:
     if not cat:
@@ -485,167 +658,227 @@ def normalize_category(cat: str) -> str:
     else:
         return "Другое"
 
-def add_note(user_id: int, category: str, content: str) -> int:
+
+@with_cursor(commit=True)
+def add_note(cursor, user_id: int, category: str, content: str) -> int:
     category = normalize_category(category)
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("""
+    cursor.execute(
+        """
             INSERT INTO notes (user_id, category, content, created_at, is_archived)
             VALUES (?, ?, ?, ?, 0)
-        """, (user_id, category, content, created_at))
-        return cursor.lastrowid
+        """,
+        (user_id, category, content, created_at),
+    )
+    return cursor.lastrowid
 
-def get_notes_categories_stats(user_id: int):
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_notes_categories_stats(cursor, user_id: int):
+    cursor.execute(
+        """
             SELECT category, COUNT(*)
             FROM notes
             WHERE user_id = ? AND is_archived = 0
             GROUP BY category
-        """, (user_id,))
-        rows = dict(cursor.fetchall())
+        """,
+        (user_id,),
+    )
+    rows = dict(cursor.fetchall())
     stats = {}
     for cat in NOTE_CATEGORIES:
         stats[cat] = rows.get(cat, 0)
     return stats
 
-def get_notes_by_cat(user_id: int, category: str, limit: int = 15):
+
+@with_cursor()
+def get_notes_by_cat(cursor, user_id: int, category: str, limit: int = 15):
     category = normalize_category(category)
-    with get_cursor() as cursor:
-        cursor.execute("""
+    cursor.execute(
+        """
             SELECT id, content, created_at
             FROM notes
             WHERE user_id = ? AND category = ? AND is_archived = 0
             ORDER BY id DESC
             LIMIT ?
-        """, (user_id, category, limit))
-        rows = cursor.fetchall()
-        return [{"id": r[0], "content": r[1], "created_at": r[2]} for r in rows]
+        """,
+        (user_id, category, limit),
+    )
+    rows = cursor.fetchall()
+    return [{"id": r[0], "content": r[1], "created_at": r[2]} for r in rows]
 
-def get_all_active_notes(user_id: int, limit: int = 25):
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_all_active_notes(cursor, user_id: int, limit: int = 25):
+    cursor.execute(
+        """
             SELECT id, category, content, created_at
             FROM notes
             WHERE user_id = ? AND is_archived = 0
             ORDER BY id DESC
             LIMIT ?
-        """, (user_id, limit))
-        rows = cursor.fetchall()
-        return [{"id": r[0], "category": r[1], "content": r[2], "created_at": r[3]} for r in rows]
+        """,
+        (user_id, limit),
+    )
+    rows = cursor.fetchall()
+    return [
+        {"id": r[0], "category": r[1], "content": r[2], "created_at": r[3]}
+        for r in rows
+    ]
 
-def delete_note_by_id(note_id: int, user_id: int) -> bool:
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("UPDATE notes SET is_archived = 1 WHERE id = ? AND user_id = ?", (note_id, user_id))
-        return cursor.rowcount > 0
 
-def get_note_by_id(note_id: int):
-    with get_cursor() as cursor:
-        cursor.execute("SELECT id, user_id, category, content FROM notes WHERE id = ?", (note_id,))
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {"id": row[0], "user_id": row[1], "category": row[2], "content": row[3]}
+@with_cursor(commit=True)
+def delete_note_by_id(cursor, note_id: int, user_id: int) -> bool:
+    cursor.execute(
+        "UPDATE notes SET is_archived = 1 WHERE id = ? AND user_id = ?",
+        (note_id, user_id),
+    )
+    return cursor.rowcount > 0
 
-def clear_notes_by_cat(user_id: int, category: str):
+
+@with_cursor()
+def get_note_by_id(cursor, note_id: int):
+    cursor.execute(
+        "SELECT id, user_id, category, content FROM notes WHERE id = ?", (note_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "user_id": row[1], "category": row[2], "content": row[3]}
+
+
+@with_cursor(commit=True)
+def clear_notes_by_cat(cursor, user_id: int, category: str):
     category = normalize_category(category)
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("UPDATE notes SET is_archived = 1 WHERE user_id = ? AND category = ?", (user_id, category))
+    cursor.execute(
+        "UPDATE notes SET is_archived = 1 WHERE user_id = ? AND category = ?",
+        (user_id, category),
+    )
 
-def get_all_pending_reminders():
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_all_pending_reminders(cursor):
+    cursor.execute("""
             SELECT id, user_id, chat_id, text, remind_at_local, remind_at_utc, created_at, source_info
             FROM reminders
             WHERE status = 'pending'
             ORDER BY remind_at_utc ASC
         """)
-        rows = cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "user_id": r[1],
-                "chat_id": r[2],
-                "text": r[3],
-                "remind_at_local": r[4],
-                "remind_at_utc": r[5],
-                "created_at": r[6],
-                "source_info": r[7]
-            }
-            for r in rows
-        ]
+    rows = cursor.fetchall()
+    return [
+        {
+            "id": r[0],
+            "user_id": r[1],
+            "chat_id": r[2],
+            "text": r[3],
+            "remind_at_local": r[4],
+            "remind_at_utc": r[5],
+            "created_at": r[6],
+            "source_info": r[7],
+        }
+        for r in rows
+    ]
 
-def get_all_notes(limit: int = 100):
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_all_notes(cursor, limit: int = 100):
+    cursor.execute(
+        """
             SELECT id, user_id, category, content, created_at
             FROM notes
             WHERE is_archived = 0
             ORDER BY id DESC
             LIMIT ?
-        """, (limit,))
-        rows = cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "user_id": r[1],
-                "category": r[2],
-                "content": r[3],
-                "created_at": r[4]
-            }
-            for r in rows
-        ]
+        """,
+        (limit,),
+    )
+    rows = cursor.fetchall()
+    return [
+        {
+            "id": r[0],
+            "user_id": r[1],
+            "category": r[2],
+            "content": r[3],
+            "created_at": r[4],
+        }
+        for r in rows
+    ]
+
 
 # --- История бизнес-чатов ---
-CHAT_HISTORY_KEEP = 40  # на чат; хватает и для контекста, и для сводки «что я пропустил»
+CHAT_HISTORY_KEEP = (
+    40  # на чат; хватает и для контекста, и для сводки «что я пропустил»
+)
+
 
 def _utc_now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-def add_chat_message(chat_id: int, role: str, text: str):
+
+@with_cursor(commit=True)
+def add_chat_message(cursor, chat_id: int, role: str, text: str):
     """role: 'them' — собеседник, 'me' — владелец (вручную или черновиком), 'bot' — автоответ ИИ"""
     if not text:
         return
-    with get_cursor(commit=True) as cursor:
-        cursor.execute(
-            "INSERT INTO chat_history (chat_id, role, text, created_at) VALUES (?, ?, ?, ?)",
-            (chat_id, role, text[:2000], _utc_now_str())
-        )
-        cursor.execute("""
+    cursor.execute(
+        "INSERT INTO chat_history (chat_id, role, text, created_at) VALUES (?, ?, ?, ?)",
+        (chat_id, role, text[:2000], _utc_now_str()),
+    )
+    cursor.execute(
+        """
             DELETE FROM chat_history
             WHERE chat_id = ? AND id NOT IN (
                 SELECT id FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?
             )
-        """, (chat_id, chat_id, CHAT_HISTORY_KEEP))
+        """,
+        (chat_id, chat_id, CHAT_HISTORY_KEEP),
+    )
 
-def get_chat_history(chat_id: int, limit: int = 10) -> list:
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_chat_history(cursor, chat_id: int, limit: int = 10) -> list:
+    cursor.execute(
+        """
             SELECT role, text, created_at FROM chat_history
             WHERE chat_id = ? ORDER BY id DESC LIMIT ?
-        """, (chat_id, limit))
-        rows = cursor.fetchall()
+        """,
+        (chat_id, limit),
+    )
+    rows = cursor.fetchall()
     return [{"role": r[0], "text": r[1], "created_at": r[2]} for r in reversed(rows)]
 
-def get_owner_style_samples(limit: int = 30) -> list:
+
+@with_cursor()
+def get_owner_style_samples(cursor, limit: int = 30) -> list:
     """Последние ручные сообщения владельца из всех чатов — образцы его стиля"""
-    with get_cursor() as cursor:
-        cursor.execute("""
+    cursor.execute(
+        """
             SELECT text FROM chat_history
             WHERE role = 'me' AND length(text) BETWEEN 2 AND 400
             ORDER BY id DESC LIMIT ?
-        """, (limit,))
-        return [r[0] for r in cursor.fetchall()]
+        """,
+        (limit,),
+    )
+    return [r[0] for r in cursor.fetchall()]
 
-def count_owner_style_samples() -> int:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT COUNT(*) FROM chat_history WHERE role = 'me'")
-        return cursor.fetchone()[0]
+
+@with_cursor()
+def count_owner_style_samples(cursor) -> int:
+    cursor.execute("SELECT COUNT(*) FROM chat_history WHERE role = 'me'")
+    return cursor.fetchone()[0]
+
 
 # --- Известные чаты ---
-def upsert_known_chat(chat_id: int, name: str, username: Optional[str], business_connection_id: Optional[str]):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("""
+@with_cursor(commit=True)
+def upsert_known_chat(
+    cursor,
+    chat_id: int,
+    name: str,
+    username: Optional[str],
+    business_connection_id: Optional[str],
+):
+    cursor.execute(
+        """
             INSERT INTO known_chats (chat_id, name, username, business_connection_id, updated_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
@@ -653,106 +886,153 @@ def upsert_known_chat(chat_id: int, name: str, username: Optional[str], business
                 username = excluded.username,
                 business_connection_id = COALESCE(excluded.business_connection_id, known_chats.business_connection_id),
                 updated_at = excluded.updated_at
-        """, (chat_id, name, username, business_connection_id, _utc_now_str()))
+        """,
+        (chat_id, name, username, business_connection_id, _utc_now_str()),
+    )
 
-def get_known_chat(chat_id: int) -> Optional[dict]:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT chat_id, name, username, business_connection_id FROM known_chats WHERE chat_id = ?", (chat_id,))
-        r = cursor.fetchone()
-    return {"chat_id": r[0], "name": r[1], "username": r[2], "business_connection_id": r[3]} if r else None
 
-def get_disabled_chats() -> list:
-    with get_cursor() as cursor:
-        cursor.execute("""
+@with_cursor()
+def get_known_chat(cursor, chat_id: int) -> Optional[dict]:
+    cursor.execute(
+        "SELECT chat_id, name, username, business_connection_id FROM known_chats WHERE chat_id = ?",
+        (chat_id,),
+    )
+    r = cursor.fetchone()
+    return (
+        {
+            "chat_id": r[0],
+            "name": r[1],
+            "username": r[2],
+            "business_connection_id": r[3],
+        }
+        if r
+        else None
+    )
+
+
+@with_cursor()
+def get_disabled_chats(cursor) -> list:
+    cursor.execute("""
             SELECT d.chat_id, k.name, k.username
             FROM disabled_chats d
             LEFT JOIN known_chats k ON k.chat_id = d.chat_id
             ORDER BY k.name
         """)
-        rows = cursor.fetchall()
+    rows = cursor.fetchall()
     return [{"id": r[0], "name": r[1], "username": r[2]} for r in rows]
 
+
 # --- VIP-контакты ---
-def is_vip(user_id: int) -> bool:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT user_id FROM vip_users WHERE user_id = ?", (user_id,))
-        return cursor.fetchone() is not None
+@with_cursor()
+def is_vip(cursor, user_id: int) -> bool:
+    cursor.execute("SELECT user_id FROM vip_users WHERE user_id = ?", (user_id,))
+    return cursor.fetchone() is not None
 
-def add_vip(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("INSERT OR IGNORE INTO vip_users (user_id) VALUES (?)", (user_id,))
 
-def remove_vip(user_id: int):
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM vip_users WHERE user_id = ?", (user_id,))
+@with_cursor(commit=True)
+def add_vip(cursor, user_id: int):
+    cursor.execute("INSERT OR IGNORE INTO vip_users (user_id) VALUES (?)", (user_id,))
 
-def get_vip_users() -> list:
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor(commit=True)
+def remove_vip(cursor, user_id: int):
+    cursor.execute("DELETE FROM vip_users WHERE user_id = ?", (user_id,))
+
+
+@with_cursor()
+def get_vip_users(cursor) -> list:
+    cursor.execute("""
             SELECT v.user_id, k.name, k.username
             FROM vip_users v
             LEFT JOIN known_chats k ON k.chat_id = v.user_id
             ORDER BY k.name
         """)
-        rows = cursor.fetchall()
+    rows = cursor.fetchall()
     return [{"id": r[0], "name": r[1], "username": r[2]} for r in rows]
 
+
 # --- Черновики ответов ---
-def add_draft(chat_id: int, business_connection_id: str, incoming: str, text: str) -> int:
-    with get_cursor(commit=True) as cursor:
-        cursor.execute("""
+@with_cursor(commit=True)
+def add_draft(
+    cursor, chat_id: int, business_connection_id: str, incoming: str, text: str
+) -> int:
+    cursor.execute(
+        """
             INSERT INTO drafts (chat_id, business_connection_id, incoming, text, created_at)
             VALUES (?, ?, ?, ?, ?)
-        """, (chat_id, business_connection_id, incoming, text, _utc_now_str()))
-        return cursor.lastrowid
+        """,
+        (chat_id, business_connection_id, incoming, text, _utc_now_str()),
+    )
+    return cursor.lastrowid
 
-def get_draft(draft_id: int) -> Optional[dict]:
-    with get_cursor() as cursor:
-        cursor.execute("""
+
+@with_cursor()
+def get_draft(cursor, draft_id: int) -> Optional[dict]:
+    cursor.execute(
+        """
             SELECT id, chat_id, business_connection_id, incoming, text, owner_msg_id, status
             FROM drafts WHERE id = ?
-        """, (draft_id,))
-        r = cursor.fetchone()
+        """,
+        (draft_id,),
+    )
+    r = cursor.fetchone()
     if not r:
         return None
-    return {"id": r[0], "chat_id": r[1], "business_connection_id": r[2], "incoming": r[3],
-            "text": r[4], "owner_msg_id": r[5], "status": r[6]}
+    return {
+        "id": r[0],
+        "chat_id": r[1],
+        "business_connection_id": r[2],
+        "incoming": r[3],
+        "text": r[4],
+        "owner_msg_id": r[5],
+        "status": r[6],
+    }
 
-def get_draft_by_owner_msg(owner_msg_id: int) -> Optional[dict]:
-    with get_cursor() as cursor:
-        cursor.execute("SELECT id FROM drafts WHERE owner_msg_id = ?", (owner_msg_id,))
-        r = cursor.fetchone()
+
+@with_cursor()
+def get_draft_by_owner_msg(cursor, owner_msg_id: int) -> Optional[dict]:
+    cursor.execute("SELECT id FROM drafts WHERE owner_msg_id = ?", (owner_msg_id,))
+    r = cursor.fetchone()
     return get_draft(r[0]) if r else None
 
-def update_draft(draft_id: int, text: Optional[str] = None, owner_msg_id: Optional[int] = None, status: Optional[str] = None):
-    with get_cursor(commit=True) as cursor:
-        if text is not None:
-            cursor.execute("UPDATE drafts SET text = ? WHERE id = ?", (text, draft_id))
-        if owner_msg_id is not None:
-            cursor.execute("UPDATE drafts SET owner_msg_id = ? WHERE id = ?", (owner_msg_id, draft_id))
-        if status is not None:
-            cursor.execute("UPDATE drafts SET status = ? WHERE id = ?", (status, draft_id))
-        # Старые черновики не копим: кнопка «Отправить» через пару суток всё равно не сработает
-        cursor.execute("DELETE FROM drafts WHERE created_at < datetime('now', '-3 days')")
 
-def get_recent_night_logs(limit: int = 20):
-    with get_cursor() as cursor:
-        cursor.execute("""
+@with_cursor(commit=True)
+def update_draft(
+    cursor,
+    draft_id: int,
+    text: Optional[str] = None,
+    owner_msg_id: Optional[int] = None,
+    status: Optional[str] = None,
+):
+    if text is not None:
+        cursor.execute("UPDATE drafts SET text = ? WHERE id = ?", (text, draft_id))
+    if owner_msg_id is not None:
+        cursor.execute(
+            "UPDATE drafts SET owner_msg_id = ? WHERE id = ?", (owner_msg_id, draft_id)
+        )
+    if status is not None:
+        cursor.execute("UPDATE drafts SET status = ? WHERE id = ?", (status, draft_id))
+    # Старые черновики не копим: кнопка «Отправить» через пару суток всё равно не сработает
+    cursor.execute("DELETE FROM drafts WHERE created_at < datetime('now', '-3 days')")
+
+
+@with_cursor()
+def get_recent_night_logs(cursor, limit: int = 20):
+    cursor.execute(
+        """
             SELECT id, sender_name, message_text, timestamp
             FROM night_logs
             ORDER BY id DESC
             LIMIT ?
-        """, (limit,))
-        rows = cursor.fetchall()
-        return [
-            {
-                "id": r[0],
-                "sender_name": r[1],
-                "message_text": r[2],
-                "timestamp": r[3]
-            }
-            for r in rows
-        ]
+        """,
+        (limit,),
+    )
+    rows = cursor.fetchall()
+    return [
+        {"id": r[0], "sender_name": r[1], "message_text": r[2], "timestamp": r[3]}
+        for r in rows
+    ]
+
 
 # --- Псевдонимы функций (для полной обратной совместимости) ---
 get_user_timezone = get_user_tz_offset
@@ -766,6 +1046,7 @@ clear_category = clear_notes_by_cat
 # БЭКАП И ВОССТАНОВЛЕНИЕ (диск Render стирается при каждом деплое/перезапуске)
 # ==============================================================================
 
+
 def snapshot_to(path: str):
     """Согласованная копия базы (учитывает WAL), безопасна при работающем боте"""
     src = sqlite3.connect(DB_NAME, timeout=15.0)
@@ -776,9 +1057,19 @@ def snapshot_to(path: str):
         dst.close()
         src.close()
 
+
 # Таблицы, которые меняются почти с каждым сообщением в чатах. Ради них одних бэкап
 # каждые 10 минут не шлём — они сохраняются реже (см. backup_worker в main.py)
-NOISY_TABLES = ("chat_history", "ai_activity", "stats_log", "users_profiles", "known_chats", "drafts", "sqlite_sequence")
+NOISY_TABLES = (
+    "chat_history",
+    "ai_activity",
+    "stats_log",
+    "users_profiles",
+    "known_chats",
+    "drafts",
+    "sqlite_sequence",
+)
+
 
 def content_hashes() -> tuple:
     """(хэш всего содержимого, хэш без «шумных» таблиц) — по содержимому, а не по байтам файла"""
@@ -795,8 +1086,10 @@ def content_hashes() -> tuple:
         conn.close()
     return full.hexdigest(), important.hexdigest()
 
+
 def content_hash() -> str:
     return content_hashes()[0]
+
 
 def validate_backup(path: str) -> bool:
     try:
@@ -804,12 +1097,18 @@ def validate_backup(path: str) -> bool:
         try:
             if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 return False
-            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
             return {"settings", "reminders", "notes"} <= tables
         finally:
             conn.close()
     except sqlite3.Error:
         return False
+
 
 def restore_from(path: str):
     """Заменяет текущую базу содержимым файла бэкапа и догоняет схему до текущей версии"""
@@ -823,6 +1122,7 @@ def restore_from(path: str):
         src.close()
     _status_cache = None
     init_db()  # бэкап мог быть сделан старой версией — создаём недостающие таблицы
+
 
 # Файла базы не было до запуска → это свежий диск (деплой/перезапуск на Render), нужна попытка восстановления
 DB_EXISTED_AT_START = os.path.exists(DB_NAME)
