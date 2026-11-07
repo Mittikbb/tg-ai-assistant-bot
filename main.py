@@ -20,7 +20,7 @@ from aiogram.types import (
     BotCommand,
     CallbackQuery,
     FSInputFile,
-    Message
+    Message,
 )
 from dotenv import load_dotenv
 from aiohttp import web
@@ -32,33 +32,35 @@ from ai_brain import (
     make_draft_reply,
     parse_user_intent,
     summarize_chat,
-    MODELS_TO_TRY
+    MODELS_TO_TRY,
 )
 
 load_dotenv()
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MY_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 PORT = int(os.environ.get("PORT", 8080))
 # Render сам выставляет RENDER_EXTERNAL_URL; локально можно задать PUBLIC_URL
-PUBLIC_URL = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or f"http://localhost:{PORT}").rstrip("/")
+PUBLIC_URL = (
+    os.getenv("PUBLIC_URL")
+    or os.getenv("RENDER_EXTERNAL_URL")
+    or f"http://localhost:{PORT}"
+).rstrip("/")
 
 user_last_manual_msg = {}
 PAUSE_TIMEOUT = 600  # 10 минут (в секундах)
+
+background_tasks = set()
 
 # (chat_id, режим) -> время последнего статусного автоответа, чтобы не отвечать на каждое сообщение
 status_reply_sent = {}
 STATUS_REPLY_COOLDOWN = 1800  # 30 минут
 
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # ==============================================================================
@@ -79,25 +81,32 @@ STAT_LABELS = [
     ("urgent", "🚨", "Срочные"),
 ]
 
+
 def esc(value) -> str:
     return html.escape(str(value)) if value else ""
+
 
 def clip(text: str, limit: int) -> str:
     text = text or ""
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
+
 def tz_label(tz: int) -> str:
     return f"UTC{'+' if tz >= 0 else ''}{tz}"
+
 
 def mode_line(status: str) -> str:
     emoji, title, desc = MODES.get(status, MODES["default"])
     return f"{emoji} <b>{title}</b> — {desc}"
 
+
 def get_cat_icon(cat: str) -> str:
     return db.CATEGORY_EMOJIS.get(db.normalize_category(cat), "📌")
 
+
 def back_to_menu_row():
     return [InlineKeyboardButton(text="⬅️ В меню", callback_data="home")]
+
 
 async def safe_edit(message: Message, text: str, reply_markup=None):
     """edit_text, который не падает на «message is not modified»"""
@@ -107,9 +116,11 @@ async def safe_edit(message: Message, text: str, reply_markup=None):
         if "not modified" not in str(e):
             raise
 
+
 # ==============================================================================
 # ДОСТУП ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА (ЛС бота и кнопки)
 # ==============================================================================
+
 
 class OwnerOnlyMiddleware(BaseMiddleware):
     """Бот личный: команды, заметки и Gemini-квоту может использовать только владелец.
@@ -121,9 +132,16 @@ class OwnerOnlyMiddleware(BaseMiddleware):
             return await handler(event, data)
         # Служебные сообщения (например, «бот закрепил файл» после автобэкапа) и сообщения ботов
         # не от человека — молча пропускаем, иначе бот ответит отказом сам себе
-        if (user and user.is_bot) or (isinstance(event, Message) and event.pinned_message):
+        if (user and user.is_bot) or (
+            isinstance(event, Message) and event.pinned_message
+        ):
             # «Бот закрепил файл» после каждого бэкапа — только мусор в чате, убираем
-            if isinstance(event, Message) and event.pinned_message and user and user.id == event.bot.id:
+            if (
+                isinstance(event, Message)
+                and event.pinned_message
+                and user
+                and user.id == event.bot.id
+            ):
                 try:
                     await event.delete()
                 except Exception:
@@ -138,12 +156,14 @@ class OwnerOnlyMiddleware(BaseMiddleware):
             await event.answer("🔒 Доступ только у владельца", show_alert=True)
         return None
 
+
 dp.message.outer_middleware(OwnerOnlyMiddleware())
 dp.callback_query.outer_middleware(OwnerOnlyMiddleware())
 
 # ==============================================================================
 # ВЕБ-ПАНЕЛЬ: КЛЮЧ ДОСТУПА
 # ==============================================================================
+
 
 def get_dashboard_token() -> str:
     env_token = os.getenv("DASHBOARD_TOKEN")
@@ -155,6 +175,7 @@ def get_dashboard_token() -> str:
         db.set_setting("dashboard_token", token)
     return token
 
+
 def rotate_dashboard_token() -> Optional[str]:
     if os.getenv("DASHBOARD_TOKEN"):
         return None  # ключ задан в окружении — меняется только там
@@ -162,16 +183,18 @@ def rotate_dashboard_token() -> Optional[str]:
     db.set_setting("dashboard_token", token)
     return token
 
+
 def dashboard_link() -> str:
     # Ключ передаётся во фрагменте (#) — он не уходит на сервер и не попадает в логи
     return f"{PUBLIC_URL}/#token={get_dashboard_token()}"
+
 
 # ==============================================================================
 # ВЕБ-СЕРВЕР (Render / UptimeRobot) + ЗАЩИЩЁННЫЙ API
 # ==============================================================================
 
-AUTH_WINDOW = 600      # окно подсчёта неудачных попыток, сек
-AUTH_MAX_FAILS = 10    # после стольких ошибок IP получает 429
+AUTH_WINDOW = 600  # окно подсчёта неудачных попыток, сек
+AUTH_MAX_FAILS = 10  # после стольких ошибок IP получает 429
 _auth_failures: dict = {}
 
 SECURITY_HEADERS = {
@@ -184,6 +207,7 @@ SECURITY_HEADERS = {
     ),
 }
 
+
 def json_response(data: dict, status: int = 200) -> web.Response:
     return web.Response(
         text=json.dumps(data, ensure_ascii=False),
@@ -191,12 +215,14 @@ def json_response(data: dict, status: int = 200) -> web.Response:
         status=status,
     )
 
+
 def client_ip(request: web.Request) -> str:
     # За прокси Render реальный адрес — последний добавленный в X-Forwarded-For
     forwarded = request.headers.get("X-Forwarded-For", "")
     if forwarded:
         return forwarded.split(",")[-1].strip()
     return request.remote or "?"
+
 
 def check_api_auth(request: web.Request) -> Optional[web.Response]:
     """None — доступ разрешён, иначе готовый ответ с ошибкой"""
@@ -211,14 +237,19 @@ def check_api_auth(request: web.Request) -> Optional[web.Response]:
     fails = [t for t in _auth_failures.get(ip, []) if now - t < AUTH_WINDOW]
     if len(fails) >= AUTH_MAX_FAILS:
         _auth_failures[ip] = fails
-        return json_response({"ok": False, "error": "Слишком много попыток. Подождите 10 минут."}, 429)
+        return json_response(
+            {"ok": False, "error": "Слишком много попыток. Подождите 10 минут."}, 429
+        )
 
     fails.append(now)
     _auth_failures[ip] = fails
     if len(_auth_failures) > 1000:  # не даём словарю разрастаться
-        for key in [k for k, v in _auth_failures.items() if not v or now - v[-1] > AUTH_WINDOW]:
+        for key in [
+            k for k, v in _auth_failures.items() if not v or now - v[-1] > AUTH_WINDOW
+        ]:
             _auth_failures.pop(key, None)
     return json_response({"ok": False, "error": "unauthorized"}, 401)
+
 
 @web.middleware
 async def security_middleware(request: web.Request, handler):
@@ -232,6 +263,7 @@ async def security_middleware(request: web.Request, handler):
         response.headers.setdefault(key, value)
     return response
 
+
 async def read_json(request: web.Request) -> dict:
     try:
         body = await request.json()
@@ -239,8 +271,10 @@ async def read_json(request: web.Request) -> dict:
     except Exception:
         return {}
 
+
 async def handle_ping(request):
     return web.Response(text="Bot is running 24/7!", content_type="text/plain")
+
 
 async def handle_get_data(request):
     try:
@@ -257,12 +291,13 @@ async def handle_get_data(request):
             "night_logs": db.get_recent_night_logs(limit=20),
             "activity": db.get_recent_activity(limit=60),
             "activity_24h": db.get_activity_today_counts(),
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         return json_response(data)
     except Exception as e:
         logging.error(f"API get_data error: {e}")
         return json_response({"ok": False, "error": "internal error"}, 500)
+
 
 async def handle_reminders_action(request):
     body = await read_json(request)
@@ -276,12 +311,15 @@ async def handle_reminders_action(request):
         elif action == "snooze":
             minutes = max(1, min(int(body.get("minutes", 15)), 24 * 60))
             if not db.snooze_reminder(rem_id, MY_ID, minutes):
-                return json_response({"ok": False, "error": "Напоминание не найдено"}, 404)
+                return json_response(
+                    {"ok": False, "error": "Напоминание не найдено"}, 404
+                )
         else:
             return json_response({"ok": False, "error": "Неизвестное действие"}, 400)
         return json_response({"ok": True})
     except (TypeError, ValueError):
         return json_response({"ok": False, "error": "Некорректные данные"}, 400)
+
 
 async def handle_notes_action(request):
     body = await read_json(request)
@@ -302,6 +340,7 @@ async def handle_notes_action(request):
     except (TypeError, ValueError):
         return json_response({"ok": False, "error": "Некорректные данные"}, 400)
 
+
 async def handle_mode_action(request):
     body = await read_json(request)
     mode = body.get("mode", "default")
@@ -310,9 +349,11 @@ async def handle_mode_action(request):
         return json_response({"ok": True, "status": mode})
     return json_response({"ok": False, "error": "Invalid mode"}, 400)
 
+
 async def handle_activity_clear(request):
     db.clear_activity()
     return json_response({"ok": True})
+
 
 async def handle_dashboard(request):
     html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
@@ -323,6 +364,7 @@ async def handle_dashboard(request):
         response.headers["Cache-Control"] = "no-store"
         return response
     return web.Response(text="Dashboard not found", status=404)
+
 
 async def start_web_server():
     app = web.Application(middlewares=[security_middleware], client_max_size=64 * 1024)
@@ -344,11 +386,15 @@ async def start_web_server():
 
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logging.info(f"🌐 Веб-панель запущена на порту {PORT} (ссылка с ключом — команда /panel в боте)")
+    logging.info(
+        f"🌐 Веб-панель запущена на порту {PORT} (ссылка с ключом — команда /panel в боте)"
+    )
+
 
 # ==============================================================================
 # ФОНОВЫЙ ВОРКЕР НАПОМИНАНИЙ (Модуль 3)
 # ==============================================================================
+
 
 async def reminder_worker(bot_instance: Bot):
     """Каждые 15 секунд проверяет базу на наступление времени напоминаний"""
@@ -368,28 +414,43 @@ async def reminder_worker(bot_instance: Bot):
                     f"{source_block}"
                 )
 
-                kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [
-                        InlineKeyboardButton(text="✅ Готово", callback_data=f"done_rem_{rem_id}"),
-                        InlineKeyboardButton(text="⏰ +15 мин", callback_data=f"snooze_{rem_id}_15"),
-                        InlineKeyboardButton(text="⏰ +1 час", callback_data=f"snooze_{rem_id}_60")
+                kb = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="✅ Готово", callback_data=f"done_rem_{rem_id}"
+                            ),
+                            InlineKeyboardButton(
+                                text="⏰ +15 мин", callback_data=f"snooze_{rem_id}_15"
+                            ),
+                            InlineKeyboardButton(
+                                text="⏰ +1 час", callback_data=f"snooze_{rem_id}_60"
+                            ),
+                        ]
                     ]
-                ])
+                )
 
                 try:
-                    await bot_instance.send_message(chat_id=chat_id, text=msg_text, reply_markup=kb)
+                    await bot_instance.send_message(
+                        chat_id=chat_id, text=msg_text, reply_markup=kb
+                    )
                     # «sent», а не «completed»: сработавшее напоминание ещё можно отложить
                     db.mark_reminder_sent(rem_id)
                 except (TelegramForbiddenError, TelegramBadRequest) as e:
                     # Бот заблокирован / чат недоступен — повтор не поможет, иначе ретрай каждые 15 сек вечно
-                    logging.error(f"Напоминание {rem_id} не может быть доставлено в чат {chat_id}: {e}")
+                    logging.error(
+                        f"Напоминание {rem_id} не может быть доставлено в чат {chat_id}: {e}"
+                    )
                     db.set_reminder_status(rem_id, "failed")
                 except Exception as e:
-                    logging.error(f"Не удалось отправить напоминание {rem_id} в чат {chat_id}: {e}")
+                    logging.error(
+                        f"Не удалось отправить напоминание {rem_id} в чат {chat_id}: {e}"
+                    )
         except Exception as e:
             logging.error(f"Ошибка в цикле reminder_worker: {e}")
 
         await asyncio.sleep(15)
+
 
 # ==============================================================================
 # АВТОБЭКАП БАЗЫ В TELEGRAM
@@ -398,21 +459,26 @@ async def reminder_worker(bot_instance: Bot):
 # ==============================================================================
 
 BACKUP_CHAT_ID = int(os.getenv("BACKUP_CHAT_ID", 0) or 0) or MY_ID
-BACKUP_INTERVAL = 600        # раз в 10 минут — если изменились заметки, напоминания, настройки и т.п.
-MINOR_BACKUP_INTERVAL = 6 * 3600  # история переписки, лента ИИ, досье — не чаще раза в 6 часов
+BACKUP_INTERVAL = (
+    600  # раз в 10 минут — если изменились заметки, напоминания, настройки и т.п.
+)
+MINOR_BACKUP_INTERVAL = (
+    6 * 3600
+)  # история переписки, лента ИИ, досье — не чаще раза в 6 часов
 BACKUP_PREFIX = "business_bot_backup"
-RESTORE_RETRIES = 10         # попыток восстановиться при старте (по одной в минуту)
+RESTORE_RETRIES = 10  # попыток восстановиться при старте (по одной в минуту)
 
 backup_state = {
-    "allowed": False,        # пока не восстановились — не перезаписываем хорошую копию пустой базой
+    "allowed": False,  # пока не восстановились — не перезаписываем хорошую копию пустой базой
     "last_hash": None,
     "last_important_hash": None,
     "last_sent_at": time.time(),
-    "msg_ids": [],           # последние сообщения с бэкапами (храним две)
+    "msg_ids": [],  # последние сообщения с бэкапами (храним две)
     "restore_attempts": 0,
 }
 backup_lock = asyncio.Lock()
 pending_restores: dict = {}  # короткий ключ -> file_id присланного файла базы
+
 
 def remove_quietly(path: str):
     if path and os.path.exists(path):
@@ -421,12 +487,18 @@ def remove_quietly(path: str):
         except Exception:
             pass
 
+
 async def find_pinned_backup() -> Optional[Message]:
     chat = await bot.get_chat(BACKUP_CHAT_ID)
     pinned = chat.pinned_message
-    if pinned and pinned.document and (pinned.document.file_name or "").startswith(BACKUP_PREFIX):
+    if (
+        pinned
+        and pinned.document
+        and (pinned.document.file_name or "").startswith(BACKUP_PREFIX)
+    ):
         return pinned
     return None
+
 
 async def restore_from_file_id(file_id: str):
     tmp = f"temp_restore_{secrets.token_hex(4)}.db"
@@ -438,11 +510,17 @@ async def restore_from_file_id(file_id: str):
         await asyncio.to_thread(db.restore_from, tmp)
     finally:
         remove_quietly(tmp)
-    backup_state["last_hash"], backup_state["last_important_hash"] = await asyncio.to_thread(db.content_hashes)
+    backup_state["last_hash"], backup_state["last_important_hash"] = (
+        await asyncio.to_thread(db.content_hashes)
+    )
 
-async def make_backup(reason: str, force: bool = False, important_only: bool = False) -> Optional[Message]:
+
+async def make_backup(
+    reason: str, force: bool = False, important_only: bool = False
+) -> Optional[Message]:
     """Шлёт копию базы в чат бэкапов и закрепляет её. None — если бэкап не нужен или запрещён.
-    important_only — слать, только если изменилось что-то кроме «шумных» таблиц (db.NOISY_TABLES)"""
+    important_only — слать, только если изменилось что-то кроме «шумных» таблиц (db.NOISY_TABLES)
+    """
     if not BACKUP_CHAT_ID:
         return None
     async with backup_lock:
@@ -459,20 +537,27 @@ async def make_backup(reason: str, force: bool = False, important_only: bool = F
         try:
             await asyncio.to_thread(db.snapshot_to, tmp)
             now_utc = datetime.now(timezone.utc)
-            local = now_utc.astimezone(timezone(timedelta(hours=db.get_user_tz_offset(MY_ID))))
+            local = now_utc.astimezone(
+                timezone(timedelta(hours=db.get_user_tz_offset(MY_ID)))
+            )
             sent = await bot.send_document(
                 BACKUP_CHAT_ID,
-                FSInputFile(tmp, filename=f"{BACKUP_PREFIX}_{now_utc.strftime('%Y%m%d_%H%M%S')}.db"),
+                FSInputFile(
+                    tmp,
+                    filename=f"{BACKUP_PREFIX}_{now_utc.strftime('%Y%m%d_%H%M%S')}.db",
+                ),
                 caption=(
                     f"💾 <b>Бэкап базы</b> · {local.strftime('%d.%m %H:%M')}\n"
                     f"<i>{esc(reason)}. Не открепляй — по закреплённому файлу бот восстановит данные после деплоя.</i>"
                 ),
-                disable_notification=True
+                disable_notification=True,
             )
         finally:
             remove_quietly(tmp)
 
-        await bot.pin_chat_message(BACKUP_CHAT_ID, sent.message_id, disable_notification=True)
+        await bot.pin_chat_message(
+            BACKUP_CHAT_ID, sent.message_id, disable_notification=True
+        )
         backup_state["last_hash"] = current_hash
         backup_state["last_important_hash"] = important_hash
         backup_state["last_sent_at"] = time.time()
@@ -493,6 +578,7 @@ async def make_backup(reason: str, force: bool = False, important_only: bool = F
         logging.info(f"💾 Бэкап базы отправлен ({reason})")
         return sent
 
+
 async def try_restore_on_start() -> bool:
     """True — можно работать (восстановились или бэкапа нет), False — повторим позже"""
     backup_state["restore_attempts"] += 1
@@ -505,17 +591,21 @@ async def try_restore_on_start() -> bool:
         await restore_from_file_id(pinned.document.file_id)
         backup_state["msg_ids"] = [pinned.message_id]
         backup_state["allowed"] = True
-        saved_at = pinned.date.astimezone(timezone(timedelta(hours=db.get_user_tz_offset(MY_ID))))
+        saved_at = pinned.date.astimezone(
+            timezone(timedelta(hours=db.get_user_tz_offset(MY_ID)))
+        )
         logging.info(f"♻️ База восстановлена из бэкапа от {saved_at:%d.%m %H:%M}")
         await bot.send_message(
             MY_ID,
             f"♻️ <b>Данные восстановлены</b> из бэкапа от {saved_at.strftime('%d.%m %H:%M')} — "
             f"заметки, напоминания и настройки на месте.",
-            disable_notification=True
+            disable_notification=True,
         )
         return True
     except Exception as e:
-        logging.error(f"Не удалось восстановить базу из бэкапа (попытка {backup_state['restore_attempts']}): {e}")
+        logging.error(
+            f"Не удалось восстановить базу из бэкапа (попытка {backup_state['restore_attempts']}): {e}"
+        )
         if backup_state["restore_attempts"] == RESTORE_RETRIES:
             try:
                 await bot.send_message(
@@ -527,6 +617,7 @@ async def try_restore_on_start() -> bool:
             except Exception:
                 pass
         return False
+
 
 async def init_backup():
     if not BACKUP_CHAT_ID:
@@ -544,6 +635,7 @@ async def init_backup():
         return
     await try_restore_on_start()
 
+
 async def backup_worker():
     logging.info("💾 Воркер автобэкапа запущен.")
     last_backup = time.time()
@@ -559,14 +651,20 @@ async def backup_worker():
                 sent = await make_backup("Автобэкап", important_only=True)
                 # Мелкие изменения (история чатов, лента ИИ, досье) сохраняем не чаще раза в 6 часов;
                 # перед деплоем/перезапуском они всё равно уходят бэкапом при выключении
-                if not sent and time.time() - backup_state["last_sent_at"] >= MINOR_BACKUP_INTERVAL:
+                if (
+                    not sent
+                    and time.time() - backup_state["last_sent_at"]
+                    >= MINOR_BACKUP_INTERVAL
+                ):
                     await make_backup("Автобэкап истории переписки")
         except Exception as e:
             logging.error(f"Ошибка в цикле backup_worker: {e}")
 
+
 # ==============================================================================
 # ГЛАВНОЕ МЕНЮ, РЕЖИМЫ, СПРАВКА, СТАТИСТИКА
 # ==============================================================================
+
 
 def build_home(first_name: str):
     status = db.get_status()
@@ -596,43 +694,58 @@ def build_home(first_name: str):
     def mode_btn(key):
         emoji, title, _ = MODES[key]
         mark = "● " if key == status else ""
-        return InlineKeyboardButton(text=f"{mark}{emoji} {title}", callback_data=f"mode_{key}")
+        return InlineKeyboardButton(
+            text=f"{mark}{emoji} {title}", callback_data=f"mode_{key}"
+        )
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [mode_btn("default"), mode_btn("busy")],
-        [mode_btn("sleep"), mode_btn("ignore")],
-        [
-            InlineKeyboardButton(text="⏰ Напоминания", callback_data="show_reminders_list"),
-            InlineKeyboardButton(text="📝 Заметки", callback_data="notes_menu")
-        ],
-        [
-            InlineKeyboardButton(text=f"⭐ VIP ({len(db.get_vip_users())})", callback_data="vips_menu"),
-            InlineKeyboardButton(text=f"🛑 Откл. чаты ({len(db.get_disabled_chats())})", callback_data="disabled_menu")
-        ],
-        [
-            InlineKeyboardButton(text="🌙 Расписание", callback_data="schedule_menu"),
-            InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats")
-        ],
-        [
-            InlineKeyboardButton(text="🌍 Пояс", callback_data="open_tz_menu")
-        ],
-        [
-            InlineKeyboardButton(text="🖥 Веб-панель", callback_data="show_panel"),
-            InlineKeyboardButton(text="📖 Справка", callback_data="show_help")
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [mode_btn("default"), mode_btn("busy")],
+            [mode_btn("sleep"), mode_btn("ignore")],
+            [
+                InlineKeyboardButton(
+                    text="⏰ Напоминания", callback_data="show_reminders_list"
+                ),
+                InlineKeyboardButton(text="📝 Заметки", callback_data="notes_menu"),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"⭐ VIP ({len(db.get_vip_users())})",
+                    callback_data="vips_menu",
+                ),
+                InlineKeyboardButton(
+                    text=f"🛑 Откл. чаты ({len(db.get_disabled_chats())})",
+                    callback_data="disabled_menu",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🌙 Расписание", callback_data="schedule_menu"
+                ),
+                InlineKeyboardButton(text="📊 Статистика", callback_data="show_stats"),
+            ],
+            [InlineKeyboardButton(text="🌍 Пояс", callback_data="open_tz_menu")],
+            [
+                InlineKeyboardButton(text="🖥 Веб-панель", callback_data="show_panel"),
+                InlineKeyboardButton(text="📖 Справка", callback_data="show_help"),
+            ],
         ]
-    ])
+    )
     return text, kb
+
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     text, kb = build_home(message.from_user.first_name)
     await message.answer(text, reply_markup=kb)
 
+
 @dp.callback_query(F.data == "home")
 async def cb_home(callback: types.CallbackQuery):
     text, kb = build_home(callback.from_user.first_name)
     await safe_edit(callback.message, text, kb)
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("mode_"))
 async def cb_mode(callback: types.CallbackQuery):
@@ -646,28 +759,34 @@ async def cb_mode(callback: types.CallbackQuery):
     text, kb = build_home(callback.from_user.first_name)
     await safe_edit(callback.message, text, kb)
 
+
 async def set_mode_and_reply(message: types.Message, mode: str):
     db.set_status(mode)
     await message.answer(
         f"🔄 <b>Режим изменён</b>\n\n{mode_line(mode)}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]),
     )
+
 
 @dp.message(Command("default"))
 async def cmd_default(message: types.Message):
     await set_mode_and_reply(message, "default")
 
+
 @dp.message(Command("ignore_all"))
 async def cmd_ignore(message: types.Message):
     await set_mode_and_reply(message, "ignore")
+
 
 @dp.message(Command("sleep"))
 async def cmd_sleep(message: types.Message):
     await set_mode_and_reply(message, "sleep")
 
+
 @dp.message(Command("busy"))
 async def cmd_busy(message: types.Message):
     await set_mode_and_reply(message, "busy")
+
 
 def build_morning_summary() -> str:
     """Утренняя сводка: кто писал ночью + напоминания на сегодня. Ночные логи при этом очищаются"""
@@ -684,7 +803,11 @@ def build_morning_summary() -> str:
                 break
             budget -= len(line)
             lines.append(line)
-        text += f"💬 <b>Пока ты спал, писали</b> · {len(logs)}\n<blockquote expandable>" + "\n".join(lines) + "</blockquote>\n"
+        text += (
+            f"💬 <b>Пока ты спал, писали</b> · {len(logs)}\n<blockquote expandable>"
+            + "\n".join(lines)
+            + "</blockquote>\n"
+        )
     else:
         text += "💬 Ночью никто не писал — можно спокойно пить кофе ☕\n"
 
@@ -701,18 +824,25 @@ def build_morning_summary() -> str:
     if todays:
         lines = []
         for dt, rem_text in todays[:15]:
-            when = dt.strftime("%H:%M") if dt.date() == today else f"просрочено с {dt.strftime('%d.%m')}"
+            when = (
+                dt.strftime("%H:%M")
+                if dt.date() == today
+                else f"просрочено с {dt.strftime('%d.%m')}"
+            )
             lines.append(f"<code>{when}</code> — {esc(clip(rem_text, 120))}")
         text += f"\n⏰ <b>На сегодня</b> · {len(todays)}\n" + "\n".join(lines)
     else:
         text += "\n⏰ На сегодня напоминаний нет."
     return text
 
+
 async def send_morning_summary(chat_id: int):
     await bot.send_message(
-        chat_id, build_morning_summary(),
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
+        chat_id,
+        build_morning_summary(),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]),
     )
+
 
 @dp.message(Command("goodmorning"))
 async def cmd_goodmorning(message: types.Message):
@@ -720,7 +850,9 @@ async def cmd_goodmorning(message: types.Message):
     db.set_setting("schedule_auto_sleep", "0")
     await send_morning_summary(message.chat.id)
 
+
 # --- Расписание сна ---
+
 
 def parse_hhmm(value: str) -> Optional[int]:
     """'01:00' -> минуты от полуночи"""
@@ -731,8 +863,10 @@ def parse_hhmm(value: str) -> Optional[int]:
         return None
     return h * 60 + m if 0 <= h <= 23 and 0 <= m <= 59 else None
 
+
 def fmt_minutes(m: int) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
+
 
 def get_schedule():
     """(start, end) в минутах или None, если расписание выключено"""
@@ -744,9 +878,11 @@ def get_schedule():
         return None
     return start, end
 
+
 def schedule_label() -> str:
     sch = get_schedule()
     return f"{fmt_minutes(sch[0])}–{fmt_minutes(sch[1])}" if sch else "выкл"
+
 
 def schedule_window_id(now_local: datetime, start: int, end: int) -> Optional[str]:
     """Дата начала текущего окна сна (окно может переходить через полночь) или None вне окна"""
@@ -759,19 +895,35 @@ def schedule_window_id(now_local: datetime, start: int, end: int) -> Optional[st
         return (now_local.date() - timedelta(days=1)).isoformat()
     return None
 
-SCHEDULE_PRESETS = [("00:00", "08:00"), ("01:00", "09:00"), ("23:00", "07:00"), ("02:00", "10:00")]
+
+SCHEDULE_PRESETS = [
+    ("00:00", "08:00"),
+    ("01:00", "09:00"),
+    ("23:00", "07:00"),
+    ("02:00", "10:00"),
+]
+
 
 def build_schedule_menu():
     sch = get_schedule()
-    rows = [[
-        InlineKeyboardButton(
-            text=f"{'● ' if sch and (fmt_minutes(sch[0]), fmt_minutes(sch[1])) == (s, e) else ''}{s}–{e}",
-            callback_data=f"sched_{s.replace(':', '')}_{e.replace(':', '')}"
-        )
-        for s, e in SCHEDULE_PRESETS[i:i + 2]
-    ] for i in range(0, len(SCHEDULE_PRESETS), 2)]
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{'● ' if sch and (fmt_minutes(sch[0]), fmt_minutes(sch[1])) == (s, e) else ''}{s}–{e}",
+                callback_data=f"sched_{s.replace(':', '')}_{e.replace(':', '')}",
+            )
+            for s, e in SCHEDULE_PRESETS[i : i + 2]
+        ]
+        for i in range(0, len(SCHEDULE_PRESETS), 2)
+    ]
     if sch:
-        rows.append([InlineKeyboardButton(text="⏹ Выключить расписание", callback_data="sched_off")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="⏹ Выключить расписание", callback_data="sched_off"
+                )
+            ]
+        )
     rows.append(back_to_menu_row())
     text = (
         f"🌙 <b>Расписание сна</b>\n\n"
@@ -782,10 +934,12 @@ def build_schedule_menu():
     )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 def set_schedule(start: str, end: str):
     db.set_setting("sleep_start", start)
     db.set_setting("sleep_end", end)
     db.set_setting("schedule_enabled", "1")
+
 
 @dp.message(Command("schedule"))
 async def cmd_schedule(message: types.Message):
@@ -795,17 +949,21 @@ async def cmd_schedule(message: types.Message):
     elif len(args) == 3:
         start, end = parse_hhmm(args[1]), parse_hhmm(args[2])
         if start is None or end is None or start == end:
-            await message.answer("⚠️ <b>Формат:</b> <code>/schedule 01:00 09:00</code> — начало и конец сна, не совпадающие.")
+            await message.answer(
+                "⚠️ <b>Формат:</b> <code>/schedule 01:00 09:00</code> — начало и конец сна, не совпадающие."
+            )
             return
         set_schedule(fmt_minutes(start), fmt_minutes(end))
     text, kb = build_schedule_menu()
     await message.answer(text, reply_markup=kb)
+
 
 @dp.callback_query(F.data == "schedule_menu")
 async def cb_schedule_menu(callback: types.CallbackQuery):
     text, kb = build_schedule_menu()
     await safe_edit(callback.message, text, kb)
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("sched_"))
 async def cb_schedule_set(callback: types.CallbackQuery):
@@ -819,6 +977,7 @@ async def cb_schedule_set(callback: types.CallbackQuery):
     text, kb = build_schedule_menu()
     await safe_edit(callback.message, text, kb)
 
+
 async def schedule_worker():
     """Раз в 30 сек проверяет расписание сна: включает режим сна и утром присылает сводку"""
     logging.info("🌙 Воркер расписания сна запущен.")
@@ -826,7 +985,9 @@ async def schedule_worker():
         try:
             sch = get_schedule()
             if sch and MY_ID:
-                now_local = datetime.now(timezone(timedelta(hours=db.get_user_tz_offset(MY_ID))))
+                now_local = datetime.now(
+                    timezone(timedelta(hours=db.get_user_tz_offset(MY_ID)))
+                )
                 window = schedule_window_id(now_local, *sch)
                 if window and db.get_setting("schedule_last_window") != window:
                     # Каждое окно обрабатываем один раз: ручная смена режима посреди ночи не перебивается
@@ -838,8 +999,9 @@ async def schedule_worker():
                     if current == "default":
                         db.set_status("sleep")
                         await bot.send_message(
-                            MY_ID, f"🌙 <b>По расписанию включён режим сна</b> до {fmt_minutes(sch[1])}. Спокойной ночи!",
-                            disable_notification=True
+                            MY_ID,
+                            f"🌙 <b>По расписанию включён режим сна</b> до {fmt_minutes(sch[1])}. Спокойной ночи!",
+                            disable_notification=True,
                         )
                 elif not window and db.get_setting("schedule_auto_sleep") == "1":
                     db.set_setting("schedule_auto_sleep", "0")
@@ -851,6 +1013,7 @@ async def schedule_worker():
             logging.error(f"Ошибка в цикле schedule_worker: {e}")
         await asyncio.sleep(30)
 
+
 def build_stats_text() -> str:
     stats = db.get_stats_summary()
     total = stats.get("total", 0)
@@ -861,67 +1024,106 @@ def build_stats_text() -> str:
     for key, emoji, title in STAT_LABELS:
         count = categories.get(key, 0)
         filled = round(8 * count / top) if count else 0
-        lines.append(f"{emoji} {title}\n<code>{'▰' * filled}{'▱' * (8 - filled)}</code> <b>{count}</b>")
+        lines.append(
+            f"{emoji} {title}\n<code>{'▰' * filled}{'▱' * (8 - filled)}</code> <b>{count}</b>"
+        )
 
     last_24h = db.get_activity_today_counts()
     return (
         f"📊 <b>Статистика ассистента</b>\n\n"
         f"Всего обработано: <b>{total}</b>\n"
         f"За сутки ответил сам: <b>{last_24h.get('reply', 0)}</b>, "
-        f"переслал тебе: <b>{last_24h.get('personal', 0)}</b>\n\n"
-        + "\n".join(lines)
+        f"переслал тебе: <b>{last_24h.get('personal', 0)}</b>\n\n" + "\n".join(lines)
     )
+
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
-    await message.answer(build_stats_text(), reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]))
+    await message.answer(
+        build_stats_text(),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]),
+    )
+
 
 @dp.callback_query(F.data == "show_stats")
 async def cb_stats(callback: types.CallbackQuery):
-    await safe_edit(callback.message, build_stats_text(), InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]))
+    await safe_edit(
+        callback.message,
+        build_stats_text(),
+        InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]),
+    )
     await callback.answer()
+
 
 async def id_command(message: types.Message, usage: str, action, done_text: str):
     args = message.text.split()
-    if len(args) < 2 or not args[1].lstrip('-').isdigit():
+    if len(args) < 2 or not args[1].lstrip("-").isdigit():
         await message.answer(f"⚠️ <b>Формат:</b> <code>{usage}</code>")
         return
     target_id = int(args[1])
     action(target_id)
     await message.answer(done_text.format(id=f"<code>{target_id}</code>"))
 
+
 @dp.message(Command("disable_chat"))
 async def cmd_disable_chat(message: types.Message):
-    await id_command(message, "/disable_chat ID_ЧАТА", db.disable_chat,
-                     "🛑 <b>Автоответ выключен</b> в чате {id}")
+    await id_command(
+        message,
+        "/disable_chat ID_ЧАТА",
+        db.disable_chat,
+        "🛑 <b>Автоответ выключен</b> в чате {id}",
+    )
+
 
 @dp.message(Command("enable_chat"))
 async def cmd_enable_chat(message: types.Message):
-    await id_command(message, "/enable_chat ID_ЧАТА", db.enable_chat,
-                     "🟢 <b>Автоответ включён</b> в чате {id}")
+    await id_command(
+        message,
+        "/enable_chat ID_ЧАТА",
+        db.enable_chat,
+        "🟢 <b>Автоответ включён</b> в чате {id}",
+    )
+
 
 @dp.message(Command("unban"))
 async def cmd_unban(message: types.Message):
-    await id_command(message, "/unban ID_ПОЛЬЗОВАТЕЛЯ", db.remove_from_blacklist,
-                     "✅ <b>Разблокирован</b> пользователь {id}")
+    await id_command(
+        message,
+        "/unban ID_ПОЛЬЗОВАТЕЛЯ",
+        db.remove_from_blacklist,
+        "✅ <b>Разблокирован</b> пользователь {id}",
+    )
+
 
 @dp.message(Command("aggressive"))
 async def cmd_aggressive(message: types.Message):
-    await id_command(message, "/aggressive ID_ПОЛЬЗОВАТЕЛЯ", db.add_to_aggressive,
-                     "🔥 <b>Агрессивный режим включён</b> для {id}")
+    await id_command(
+        message,
+        "/aggressive ID_ПОЛЬЗОВАТЕЛЯ",
+        db.add_to_aggressive,
+        "🔥 <b>Агрессивный режим включён</b> для {id}",
+    )
+
 
 @dp.message(Command("unaggressive"))
 async def cmd_unaggressive(message: types.Message):
-    await id_command(message, "/unaggressive ID_ПОЛЬЗОВАТЕЛЯ", db.remove_from_aggressive,
-                     "🟢 <b>Агрессивный режим выключен</b> для {id}")
+    await id_command(
+        message,
+        "/unaggressive ID_ПОЛЬЗОВАТЕЛЯ",
+        db.remove_from_aggressive,
+        "🟢 <b>Агрессивный режим выключен</b> для {id}",
+    )
+
 
 # --- Отключённые чаты и VIP-контакты ---
+
 
 def contact_label(c: dict) -> str:
     label = c.get("name") or f"ID {c['id']}"
     if c.get("username"):
         label += f" (@{c['username']})"
     return label
+
 
 def build_disabled_menu():
     chats = db.get_disabled_chats()
@@ -933,10 +1135,23 @@ def build_disabled_menu():
         )
         return text, InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
     lines = [f"• {esc(contact_label(c))} · <code>{c['id']}</code>" for c in chats]
-    rows = [[InlineKeyboardButton(text=clip(f"🟢 {contact_label(c)}", 60), callback_data=f"menu_enable_{c['id']}")] for c in chats]
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=clip(f"🟢 {contact_label(c)}", 60),
+                callback_data=f"menu_enable_{c['id']}",
+            )
+        ]
+        for c in chats
+    ]
     rows.append(back_to_menu_row())
-    text = f"🛑 <b>Отключённые чаты</b> · {len(chats)}\n\n" + "\n".join(lines) + "\n\n<i>Нажми на чат, чтобы снова включить автоответ.</i>"
+    text = (
+        f"🛑 <b>Отключённые чаты</b> · {len(chats)}\n\n"
+        + "\n".join(lines)
+        + "\n\n<i>Нажми на чат, чтобы снова включить автоответ.</i>"
+    )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 def build_vip_menu():
     vips = db.get_vip_users()
@@ -948,19 +1163,36 @@ def build_vip_menu():
         )
         return text, InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
     lines = [f"• {esc(contact_label(v))} · <code>{v['id']}</code>" for v in vips]
-    rows = [[InlineKeyboardButton(text=clip(f"✖️ {contact_label(v)}", 60), callback_data=f"menu_unvip_{v['id']}")] for v in vips]
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=clip(f"✖️ {contact_label(v)}", 60),
+                callback_data=f"menu_unvip_{v['id']}",
+            )
+        ]
+        for v in vips
+    ]
     rows.append(back_to_menu_row())
-    text = f"⭐ <b>VIP-контакты</b> · {len(vips)}\n\n" + "\n".join(lines) + "\n\n<i>Их сообщения сразу пересылаются тебе. Нажми, чтобы убрать.</i>"
+    text = (
+        f"⭐ <b>VIP-контакты</b> · {len(vips)}\n\n"
+        + "\n".join(lines)
+        + "\n\n<i>Их сообщения сразу пересылаются тебе. Нажми, чтобы убрать.</i>"
+    )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 def contact_name(user_id: int) -> str:
     known = db.get_known_chat(user_id)
-    return esc(known["name"]) if known and known.get("name") else f"<code>{user_id}</code>"
+    return (
+        esc(known["name"]) if known and known.get("name") else f"<code>{user_id}</code>"
+    )
+
 
 @dp.message(Command("disabled"))
 async def cmd_disabled(message: types.Message):
     text, kb = build_disabled_menu()
     await message.answer(text, reply_markup=kb)
+
 
 @dp.callback_query(F.data == "disabled_menu")
 async def cb_disabled_menu(callback: types.CallbackQuery):
@@ -968,12 +1200,14 @@ async def cb_disabled_menu(callback: types.CallbackQuery):
     await safe_edit(callback.message, text, kb)
     await callback.answer()
 
+
 @dp.callback_query(F.data.startswith("menu_enable_"))
 async def cb_menu_enable(callback: types.CallbackQuery):
     db.enable_chat(int(callback.data.replace("menu_enable_", "")))
     await callback.answer("🟢 Автоответ включён")
     text, kb = build_disabled_menu()
     await safe_edit(callback.message, text, kb)
+
 
 @dp.callback_query(F.data.startswith("disablechat_"))
 async def cb_disable_chat(callback: types.CallbackQuery):
@@ -984,39 +1218,65 @@ async def cb_disable_chat(callback: types.CallbackQuery):
         callback.message,
         f"🛑 <b>Автоответ выключен</b> в чате с {contact_name(chat_id)}\n"
         f"<i>Уведомлений о паузе по нему больше не будет.</i>",
-        InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🟢 Включить обратно", callback_data=f"enablechat_{chat_id}"),
-            InlineKeyboardButton(text="🛑 Все отключённые", callback_data="disabled_menu")
-        ]])
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🟢 Включить обратно",
+                        callback_data=f"enablechat_{chat_id}",
+                    ),
+                    InlineKeyboardButton(
+                        text="🛑 Все отключённые", callback_data="disabled_menu"
+                    ),
+                ]
+            ]
+        ),
     )
+
 
 @dp.callback_query(F.data.startswith("enablechat_"))
 async def cb_enable_chat(callback: types.CallbackQuery):
     chat_id = int(callback.data.replace("enablechat_", ""))
     db.enable_chat(chat_id)
     await callback.answer("🟢 Автоответ включён")
-    await safe_edit(callback.message, f"🟢 <b>Автоответ включён</b> в чате с {contact_name(chat_id)}")
+    await safe_edit(
+        callback.message,
+        f"🟢 <b>Автоответ включён</b> в чате с {contact_name(chat_id)}",
+    )
+
 
 @dp.message(Command("vips"))
 async def cmd_vips(message: types.Message):
     text, kb = build_vip_menu()
     await message.answer(text, reply_markup=kb)
 
+
 @dp.message(Command("vip"))
 async def cmd_vip(message: types.Message):
-    await id_command(message, "/vip ID_ПОЛЬЗОВАТЕЛЯ", db.add_vip,
-                     "⭐ {id} теперь <b>VIP</b> — его сообщения буду сразу пересылать тебе")
+    await id_command(
+        message,
+        "/vip ID_ПОЛЬЗОВАТЕЛЯ",
+        db.add_vip,
+        "⭐ {id} теперь <b>VIP</b> — его сообщения буду сразу пересылать тебе",
+    )
+
 
 @dp.message(Command("unvip"))
 async def cmd_unvip(message: types.Message):
-    await id_command(message, "/unvip ID_ПОЛЬЗОВАТЕЛЯ", db.remove_vip,
-                     "✖️ {id} больше не VIP — снова работает автоответчик")
+    await id_command(
+        message,
+        "/unvip ID_ПОЛЬЗОВАТЕЛЯ",
+        db.remove_vip,
+        "✖️ {id} больше не VIP — снова работает автоответчик",
+    )
+
 
 @dp.callback_query(F.data == "vips_menu")
 async def cb_vips_menu(callback: types.CallbackQuery):
     text, kb = build_vip_menu()
     await safe_edit(callback.message, text, kb)
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("menu_unvip_"))
 async def cb_menu_unvip(callback: types.CallbackQuery):
@@ -1025,6 +1285,7 @@ async def cb_menu_unvip(callback: types.CallbackQuery):
     text, kb = build_vip_menu()
     await safe_edit(callback.message, text, kb)
 
+
 @dp.callback_query(F.data.startswith("vip_"))
 async def cb_vip(callback: types.CallbackQuery):
     user_id = int(callback.data.replace("vip_", ""))
@@ -1032,17 +1293,27 @@ async def cb_vip(callback: types.CallbackQuery):
     await callback.answer("⭐ Добавлен в VIP")
     await callback.message.answer(
         f"⭐ {contact_name(user_id)} теперь <b>VIP</b>: я не буду ему отвечать и сразу перешлю тебе его сообщения.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✖️ Убрать из VIP", callback_data=f"unvip_{user_id}")
-        ]])
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✖️ Убрать из VIP", callback_data=f"unvip_{user_id}"
+                    )
+                ]
+            ]
+        ),
     )
+
 
 @dp.callback_query(F.data.startswith("unvip_"))
 async def cb_unvip(callback: types.CallbackQuery):
     user_id = int(callback.data.replace("unvip_", ""))
     db.remove_vip(user_id)
     await callback.answer("Убран из VIP")
-    await callback.message.answer(f"✖️ {contact_name(user_id)} больше не VIP — снова работает автоответчик.")
+    await callback.message.answer(
+        f"✖️ {contact_name(user_id)} больше не VIP — снова работает автоответчик."
+    )
+
 
 HELP_TEXT = (
     "📖 <b>Справка</b>\n\n"
@@ -1083,9 +1354,14 @@ HELP_TEXT = (
     "✨ <code>~текст</code> в любом чате — перепишу сообщение мило"
 )
 
+
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    await message.answer(HELP_TEXT, reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]))
+    await message.answer(
+        HELP_TEXT,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]),
+    )
+
 
 @dp.message(Command("style"))
 async def cmd_style(message: types.Message):
@@ -1105,13 +1381,19 @@ async def cmd_style(message: types.Message):
         f"(в памяти: <b>{total}</b>, в каждом черновике используется до 30).\n\n"
         f"Свежие образцы:\n<blockquote expandable>{examples}</blockquote>\n"
         f"<i>Сообщения с «~» не учитываются — это не твой обычный стиль.</i>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()])
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]),
     )
+
 
 @dp.callback_query(F.data == "show_help")
 async def cb_help(callback: types.CallbackQuery):
-    await safe_edit(callback.message, HELP_TEXT, InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]))
+    await safe_edit(
+        callback.message,
+        HELP_TEXT,
+        InlineKeyboardMarkup(inline_keyboard=[back_to_menu_row()]),
+    )
     await callback.answer()
+
 
 def build_panel_message():
     link = dashboard_link()
@@ -1126,14 +1408,22 @@ def build_panel_message():
     if link.startswith("https://"):
         rows.append([InlineKeyboardButton(text="🚀 Открыть панель", url=link)])
     if not os.getenv("DASHBOARD_TOKEN"):
-        rows.append([InlineKeyboardButton(text="🔄 Сменить ключ", callback_data="rotate_panel_token")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🔄 Сменить ключ", callback_data="rotate_panel_token"
+                )
+            ]
+        )
     rows.append(back_to_menu_row())
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 @dp.message(Command("panel"))
 async def cmd_panel(message: types.Message):
     text, kb = build_panel_message()
     await message.answer(text, reply_markup=kb, disable_web_page_preview=True)
+
 
 @dp.callback_query(F.data == "show_panel")
 async def cb_panel(callback: types.CallbackQuery):
@@ -1141,14 +1431,20 @@ async def cb_panel(callback: types.CallbackQuery):
     await safe_edit(callback.message, text, kb)
     await callback.answer()
 
+
 @dp.callback_query(F.data == "rotate_panel_token")
 async def cb_rotate_panel_token(callback: types.CallbackQuery):
     if rotate_dashboard_token() is None:
-        await callback.answer("Ключ задан в DASHBOARD_TOKEN — меняй его там.", show_alert=True)
+        await callback.answer(
+            "Ключ задан в DASHBOARD_TOKEN — меняй его там.", show_alert=True
+        )
         return
-    await callback.answer("🔄 Ключ обновлён, старая ссылка больше не работает", show_alert=True)
+    await callback.answer(
+        "🔄 Ключ обновлён, старая ссылка больше не работает", show_alert=True
+    )
     text, kb = build_panel_message()
     await safe_edit(callback.message, text, kb)
+
 
 # ==============================================================================
 # ОБРАБОТКА БИЗНЕС-СООБЩЕНИЙ (Telegram Business)
@@ -1160,36 +1456,80 @@ STATUS_REPLIES = {
     "busy": "[ИИ-Ассистент] Пользователь занят. Если дело срочное, напишите 'Срочно'.",
 }
 
+
 async def forward_vip_message(message: types.Message):
     """Пересылает сообщение VIP-контакта владельцу. Медиа шлём по file_id — он валиден для бота"""
     sender_id = message.from_user.id
     text = message.text or message.caption or ""
     header = f"⭐ <b>VIP</b> · {esc(message.from_user.first_name) or 'Без имени'} · <code>{sender_id}</code>"
-    caption = f"{header}\n<blockquote>{esc(clip(text, 800))}</blockquote>" if text else header
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🧾 Что я пропустил?", callback_data=f"chat_summary_{message.chat.id}"),
-        InlineKeyboardButton(text="✖️ Убрать из VIP", callback_data=f"unvip_{sender_id}")
-    ]])
+    caption = (
+        f"{header}\n<blockquote>{esc(clip(text, 800))}</blockquote>" if text else header
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🧾 Что я пропустил?",
+                    callback_data=f"chat_summary_{message.chat.id}",
+                ),
+                InlineKeyboardButton(
+                    text="✖️ Убрать из VIP", callback_data=f"unvip_{sender_id}"
+                ),
+            ]
+        ]
+    )
     try:
         if message.photo:
-            await bot.send_photo(MY_ID, message.photo[-1].file_id, caption=caption, reply_markup=kb)
+            await bot.send_photo(
+                MY_ID, message.photo[-1].file_id, caption=caption, reply_markup=kb
+            )
         elif message.voice:
-            await bot.send_voice(MY_ID, message.voice.file_id, caption=caption, reply_markup=kb)
+            await bot.send_voice(
+                MY_ID, message.voice.file_id, caption=caption, reply_markup=kb
+            )
         elif message.video:
-            await bot.send_video(MY_ID, message.video.file_id, caption=caption, reply_markup=kb)
+            await bot.send_video(
+                MY_ID, message.video.file_id, caption=caption, reply_markup=kb
+            )
         elif message.document:
-            await bot.send_document(MY_ID, message.document.file_id, caption=caption, reply_markup=kb)
+            await bot.send_document(
+                MY_ID, message.document.file_id, caption=caption, reply_markup=kb
+            )
         elif message.video_note:
             await bot.send_video_note(MY_ID, message.video_note.file_id)
-            await bot.send_message(MY_ID, f"{header}\n<i>видеосообщение</i>", reply_markup=kb)
+            await bot.send_message(
+                MY_ID, f"{header}\n<i>видеосообщение</i>", reply_markup=kb
+            )
         elif message.sticker:
-            await bot.send_message(MY_ID, f"{header}\n<i>стикер {esc(message.sticker.emoji or '')}</i>", reply_markup=kb)
+            await bot.send_message(
+                MY_ID,
+                f"{header}\n<i>стикер {esc(message.sticker.emoji or '')}</i>",
+                reply_markup=kb,
+            )
         else:
-            await bot.send_message(MY_ID, f"{header}\n<blockquote>{esc(clip(text, 3500)) or '<i>медиа</i>'}</blockquote>", reply_markup=kb)
+            await bot.send_message(
+                MY_ID,
+                f"{header}\n<blockquote>{esc(clip(text, 3500)) or '<i>медиа</i>'}</blockquote>",
+                reply_markup=kb,
+            )
     except Exception as e:
         logging.error(f"Не удалось переслать VIP-сообщение от {sender_id}: {e}")
-        await bot.send_message(MY_ID, f"{header}\n<blockquote>{esc(clip(text, 3500)) or '<i>медиа — не удалось переслать</i>'}</blockquote>", reply_markup=kb)
-    db.log_activity("personal", message.chat.id, sender_id, message.from_user.first_name or "", text or "[Медиа]", "", "vip", "VIP — переслано владельцу")
+        await bot.send_message(
+            MY_ID,
+            f"{header}\n<blockquote>{esc(clip(text, 3500)) or '<i>медиа — не удалось переслать</i>'}</blockquote>",
+            reply_markup=kb,
+        )
+    db.log_activity(
+        "personal",
+        message.chat.id,
+        sender_id,
+        message.from_user.first_name or "",
+        text or "[Медиа]",
+        "",
+        "vip",
+        "VIP — переслано владельцу",
+    )
+
 
 @dp.business_message()
 async def handle_business_message(message: types.Message):
@@ -1204,12 +1544,16 @@ async def handle_business_message(message: types.Message):
         return
 
     last_msg_time = user_last_manual_msg.get(chat_id, 0)
-    was_paused = (time.time() - last_msg_time < PAUSE_TIMEOUT)
+    was_paused = time.time() - last_msg_time < PAUSE_TIMEOUT
 
     # Запоминаем собеседника (чат в Business — всегда личка с ним) и соединение для отправки черновиков
     try:
-        db.upsert_known_chat(chat_id, message.chat.full_name or str(chat_id), message.chat.username,
-                             message.business_connection_id)
+        db.upsert_known_chat(
+            chat_id,
+            message.chat.full_name or str(chat_id),
+            message.chat.username,
+            message.business_connection_id,
+        )
     except Exception as e:
         logging.warning(f"Не удалось сохранить чат {chat_id}: {e}")
 
@@ -1223,27 +1567,35 @@ async def handle_business_message(message: types.Message):
             clean_text = text[1:].strip()
             final_text = ""  # кавайный текст — не образец твоего стиля
             if clean_text:
-                try:
-                    cute_text = await make_cute_text(clean_text)
-                    if cute_text and cute_text != clean_text:
-                        if message.caption is not None:
-                            await bot.edit_message_caption(
-                                caption=cute_text[:1024],
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                        else:
-                            await bot.edit_message_text(
-                                text=cute_text,
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                except Exception as e:
-                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+
+                async def _update_cute_text():
+                    try:
+                        cute_text = await make_cute_text(clean_text)
+                        if cute_text and cute_text != clean_text:
+                            if message.caption is not None:
+                                await bot.edit_message_caption(
+                                    caption=cute_text[:1024],
+                                    chat_id=chat_id,
+                                    message_id=message.message_id,
+                                    business_connection_id=message.business_connection_id,
+                                    parse_mode=None,
+                                )
+                            else:
+                                await bot.edit_message_text(
+                                    text=cute_text,
+                                    chat_id=chat_id,
+                                    message_id=message.message_id,
+                                    business_connection_id=message.business_connection_id,
+                                    parse_mode=None,
+                                )
+                    except Exception as e:
+                        logging.error(
+                            f"Ошибка при редактировании няшного сообщения: {e}"
+                        )
+
+                task = asyncio.create_task(_update_cute_text())
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
         db.add_chat_message(chat_id, "me", final_text)
 
@@ -1252,16 +1604,28 @@ async def handle_business_message(message: types.Message):
 
         # Отправляем уведомление ТОЛЬКО если чат еще не был на паузе
         if not was_paused and not autoreply_off:
-            logging.info(f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Ставим на паузу.")
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}"),
-                InlineKeyboardButton(text="🛑 Отключить чат", callback_data=f"disablechat_{chat_id}")
-            ]])
+            logging.info(
+                f"⏸️ Зафиксирован личный ответ в чате {chat_id}. Ставим на паузу."
+            )
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="▶️ Вернуть автоответ",
+                            callback_data=f"resume_{chat_id}",
+                        ),
+                        InlineKeyboardButton(
+                            text="🛑 Отключить чат",
+                            callback_data=f"disablechat_{chat_id}",
+                        ),
+                    ]
+                ]
+            )
             await bot.send_message(
                 MY_ID,
                 f"⏸️ <b>Пауза 10 минут</b>\n"
                 f"Ты ответил сам в чате с <b>{esc(message.chat.full_name) or chat_id}</b> — я пока помолчу.",
-                reply_markup=kb
+                reply_markup=kb,
             )
         return
 
@@ -1288,7 +1652,7 @@ async def handle_business_message(message: types.Message):
             await bot.read_business_message(
                 business_connection_id=message.business_connection_id,
                 chat_id=chat_id,
-                message_id=message.message_id
+                message_id=message.message_id,
             )
         except Exception as e:
             logging.warning(f"Не удалось прочитать сообщение: {e}")
@@ -1303,7 +1667,9 @@ async def handle_business_message(message: types.Message):
         await asyncio.sleep(2)
         await message.answer(STATUS_REPLIES[mode], parse_mode=None)
         db.add_chat_message(chat_id, "bot", STATUS_REPLIES[mode])
-        db.log_activity("status", chat_id, sender_id, sender_name, text, STATUS_REPLIES[mode], mode)
+        db.log_activity(
+            "status", chat_id, sender_id, sender_name, text, STATUS_REPLIES[mode], mode
+        )
 
     # Чат на 10-минутной паузе после твоего ответа — ты сейчас в диалоге, поэтому бот молчит
     # в любом режиме (иначе писал бы «Пользователь спит» посреди переписки).
@@ -1325,15 +1691,22 @@ async def handle_business_message(message: types.Message):
 
     if was_paused and not message.voice:
         if message.photo or "срочно" in text.lower():
-            kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}")
-            ]])
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="▶️ Вернуть автоответ",
+                            callback_data=f"resume_{chat_id}",
+                        )
+                    ]
+                ]
+            )
             await bot.send_message(
                 MY_ID,
                 f"📩 <b>Срочное / медиа</b> · {esc(sender_name)}\n"
                 f"<i>Чат на паузе, я не отвечал.</i>\n"
                 f"<blockquote>{shown_text}</blockquote>",
-                reply_markup=kb
+                reply_markup=kb,
             )
         return
 
@@ -1362,7 +1735,14 @@ async def handle_business_message(message: types.Message):
     user_profile = db.get_user_profile(sender_id)
     is_aggr = db.is_aggressive(sender_id)
 
-    analysis = await analyze_message(text, photo_path, voice_path, user_profile, is_aggressive=is_aggr, history=history)
+    analysis = await analyze_message(
+        text,
+        photo_path,
+        voice_path,
+        user_profile,
+        is_aggressive=is_aggr,
+        history=history,
+    )
 
     for path in (photo_path, voice_path):
         if path and os.path.exists(path):
@@ -1382,75 +1762,125 @@ async def handle_business_message(message: types.Message):
 
     # Голосовые и фото без подписи попадают в историю через расшифровку/описание
     if not text and summary:
-        db.add_chat_message(chat_id, "them", f"[{'Голосовое' if message.voice else 'Медиа'}] {summary}")
+        db.add_chat_message(
+            chat_id, "them", f"[{'Голосовое' if message.voice else 'Медиа'}] {summary}"
+        )
 
     summary_block = f"\n💡 <i>{esc(summary)}</i>" if summary else ""
     who = f"{esc(sender_name)} · <code>{sender_id}</code>"
 
     # 3. ОБРАБОТКА И ОТВЕТЫ
     if analysis.get("tone_warning"):
-        db.log_activity("tone", chat_id, sender_id, sender_name, incoming_for_log, "", category, summary)
+        db.log_activity(
+            "tone",
+            chat_id,
+            sender_id,
+            sender_name,
+            incoming_for_log,
+            "",
+            category,
+            summary,
+        )
         await bot.send_message(
             MY_ID,
-            f"⚠️ <b>Повышенный тон</b> · {who}\n<blockquote>{shown_text}</blockquote>"
+            f"⚠️ <b>Повышенный тон</b> · {who}\n<blockquote>{shown_text}</blockquote>",
         )
 
     aggr_btn = (
-        InlineKeyboardButton(text="🟢 Выкл агрессию", callback_data=f"unaggr_{sender_id}")
-        if is_aggr else
-        InlineKeyboardButton(text="🔥 Вкл агрессию", callback_data=f"aggr_{sender_id}")
+        InlineKeyboardButton(
+            text="🟢 Выкл агрессию", callback_data=f"unaggr_{sender_id}"
+        )
+        if is_aggr
+        else InlineKeyboardButton(
+            text="🔥 Вкл агрессию", callback_data=f"aggr_{sender_id}"
+        )
     )
-    summary_btn = InlineKeyboardButton(text="🧾 Что я пропустил?", callback_data=f"chat_summary_{chat_id}")
+    summary_btn = InlineKeyboardButton(
+        text="🧾 Что я пропустил?", callback_data=f"chat_summary_{chat_id}"
+    )
     action_rows = [
         [
-            InlineKeyboardButton(text="🚫 Игнорировать", callback_data=f"ban_{sender_id}"),
-            InlineKeyboardButton(text="⏸️ Пауза", callback_data=f"pause_{chat_id}")
+            InlineKeyboardButton(
+                text="🚫 Игнорировать", callback_data=f"ban_{sender_id}"
+            ),
+            InlineKeyboardButton(text="⏸️ Пауза", callback_data=f"pause_{chat_id}"),
         ],
         [aggr_btn, summary_btn],
         [
             InlineKeyboardButton(text="⭐ В VIP", callback_data=f"vip_{sender_id}"),
-            InlineKeyboardButton(text="🛑 Отключить чат", callback_data=f"disablechat_{chat_id}")
-        ]
+            InlineKeyboardButton(
+                text="🛑 Отключить чат", callback_data=f"disablechat_{chat_id}"
+            ),
+        ],
     ]
     kb_actions = InlineKeyboardMarkup(inline_keyboard=action_rows)
 
     if paused_voice:
-        db.log_activity("personal", chat_id, sender_id, sender_name, incoming_for_log, "", category, summary)
+        db.log_activity(
+            "personal",
+            chat_id,
+            sender_id,
+            sender_name,
+            incoming_for_log,
+            "",
+            category,
+            summary,
+        )
         await bot.send_message(
             MY_ID,
             f"🎤 <b>Голосовое</b> · {who}\n<i>Чат на паузе, я не отвечал.</i>\n"
             f"<blockquote expandable>{esc(clip(summary, 3000)) or 'не удалось расшифровать'}</blockquote>",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}"),
-                summary_btn
-            ]])
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="▶️ Вернуть автоответ",
+                            callback_data=f"resume_{chat_id}",
+                        ),
+                        summary_btn,
+                    ]
+                ]
+            ),
         )
         return
 
     if category == "personal":
-        db.log_activity("personal", chat_id, sender_id, sender_name, incoming_for_log, "", category, summary)
+        db.log_activity(
+            "personal",
+            chat_id,
+            sender_id,
+            sender_name,
+            incoming_for_log,
+            "",
+            category,
+            summary,
+        )
         # Сам не отвечаю, но готовлю черновик в твоём стиле — отправишь одной кнопкой
         incoming_for_draft = text or summary
         draft_text = await make_draft_reply(
             incoming_for_draft,
             history=db.get_chat_history(chat_id, limit=15),
             style_samples=db.get_owner_style_samples(),
-            user_profile=new_profile or user_profile
+            user_profile=new_profile or user_profile,
         )
         if draft_text and message.business_connection_id:
-            draft_id = db.add_draft(chat_id, message.business_connection_id, incoming_for_draft, draft_text)
+            draft_id = db.add_draft(
+                chat_id, message.business_connection_id, incoming_for_draft, draft_text
+            )
             sent = await bot.send_message(
                 MY_ID,
                 f"📥 <b>Личное</b> · {who}\n<blockquote>{shown_text}</blockquote>{summary_block}\n\n"
                 + draft_block(draft_text),
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=draft_rows(draft_id) + action_rows)
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=draft_rows(draft_id) + action_rows
+                ),
             )
             db.update_draft(draft_id, owner_msg_id=sent.message_id)
         else:
             await bot.send_message(
                 MY_ID,
                 f"📥 <b>Личное</b> · {who}\n<blockquote>{shown_text}</blockquote>{summary_block}",
-                reply_markup=kb_actions
+                reply_markup=kb_actions,
             )
 
     elif category in ["formal", "tech_vpn", "urgent"] or message.voice:
@@ -1458,29 +1888,49 @@ async def handle_business_message(message: types.Message):
         reply_text = analysis.get("suggested_reply")
 
         if message.photo and category == "tech_vpn":
-            db.log_activity("screenshot", chat_id, sender_id, sender_name, incoming_for_log, "", category, summary)
+            db.log_activity(
+                "screenshot",
+                chat_id,
+                sender_id,
+                sender_name,
+                incoming_for_log,
+                "",
+                category,
+                summary,
+            )
             await bot.send_message(
                 MY_ID,
                 f"📸 <b>Разбор скриншота</b> · {who}{summary_block}",
-                reply_markup=kb_actions
+                reply_markup=kb_actions,
             )
         elif reply_text:
             # Ответ ИИ отправляем как обычный текст: символы < > & не должны ломать отправку
             await message.answer(reply_text, parse_mode=None)
             db.add_chat_message(chat_id, "bot", reply_text)
-            db.log_activity("reply", chat_id, sender_id, sender_name, incoming_for_log, reply_text, category, summary)
+            db.log_activity(
+                "reply",
+                chat_id,
+                sender_id,
+                sender_name,
+                incoming_for_log,
+                reply_text,
+                category,
+                summary,
+            )
             aggr_tag = " 🔥" if is_aggr else ""
             await bot.send_message(
                 MY_ID,
                 f"🤖 <b>Ответил за тебя</b>{aggr_tag} · {who}\n"
                 f"<blockquote>{shown_text}</blockquote>\n"
                 f"↳ {esc(reply_text)}{summary_block}",
-                reply_markup=kb_actions
+                reply_markup=kb_actions,
             )
+
 
 # --- Черновики ответов на личное ---
 
 DRAFT_MARKER = "✍️ <b>Черновик ответа</b>"
+
 
 def draft_block(draft_text: str) -> str:
     return (
@@ -1489,20 +1939,29 @@ def draft_block(draft_text: str) -> str:
         f"<i>Можно ответить на это сообщение своим текстом — отправлю его вместо черновика.</i>"
     )
 
+
 def draft_rows(draft_id: int) -> list:
-    return [[
-        InlineKeyboardButton(text="📤 Отправить", callback_data=f"draft_send_{draft_id}"),
-        InlineKeyboardButton(text="🔄 Другой", callback_data=f"draft_regen_{draft_id}"),
-        InlineKeyboardButton(text="✖️", callback_data=f"draft_drop_{draft_id}")
-    ]]
+    return [
+        [
+            InlineKeyboardButton(
+                text="📤 Отправить", callback_data=f"draft_send_{draft_id}"
+            ),
+            InlineKeyboardButton(
+                text="🔄 Другой", callback_data=f"draft_regen_{draft_id}"
+            ),
+            InlineKeyboardButton(text="✖️", callback_data=f"draft_drop_{draft_id}"),
+        ]
+    ]
+
 
 async def send_as_owner(draft: dict, text_to_send: str) -> Optional[str]:
     """Отправляет текст собеседнику от твоего имени. Возвращает текст ошибки или None"""
     try:
         await bot.send_message(
-            draft["chat_id"], text_to_send,
+            draft["chat_id"],
+            text_to_send,
             business_connection_id=draft["business_connection_id"],
-            parse_mode=None
+            parse_mode=None,
         )
     except TelegramBadRequest as e:
         return str(e)
@@ -1512,35 +1971,55 @@ async def send_as_owner(draft: dict, text_to_send: str) -> Optional[str]:
     user_last_manual_msg[draft["chat_id"]] = time.time()
     return None
 
+
 def draft_chat_name(draft: dict) -> str:
     known = db.get_known_chat(draft["chat_id"])
-    return esc(known["name"]) if known and known.get("name") else f"<code>{draft['chat_id']}</code>"
+    return (
+        esc(known["name"])
+        if known and known.get("name")
+        else f"<code>{draft['chat_id']}</code>"
+    )
+
 
 @dp.callback_query(F.data.startswith("draft_send_"))
 async def cb_draft_send(callback: types.CallbackQuery):
     draft = db.get_draft(int(callback.data.replace("draft_send_", "")))
     if not draft or draft["status"] != "pending":
-        await callback.answer("Этот черновик уже отправлен или отменён.", show_alert=True)
+        await callback.answer(
+            "Этот черновик уже отправлен или отменён.", show_alert=True
+        )
         return
     error = await send_as_owner(draft, draft["text"])
     if error:
         await callback.answer("Не получилось отправить", show_alert=True)
-        await callback.message.answer(f"⚠️ <b>Черновик не отправлен</b>\n<code>{esc(clip(error, 300))}</code>")
+        await callback.message.answer(
+            f"⚠️ <b>Черновик не отправлен</b>\n<code>{esc(clip(error, 300))}</code>"
+        )
         return
     await callback.answer("📤 Отправлено")
     await safe_edit(
         callback.message,
         f"📤 <b>Отправлено</b> → {draft_chat_name(draft)}\n<blockquote>{esc(draft['text'])}</blockquote>",
-        InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🧾 Что я пропустил?", callback_data=f"chat_summary_{draft['chat_id']}")
-        ]])
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🧾 Что я пропустил?",
+                        callback_data=f"chat_summary_{draft['chat_id']}",
+                    )
+                ]
+            ]
+        ),
     )
+
 
 @dp.callback_query(F.data.startswith("draft_regen_"))
 async def cb_draft_regen(callback: types.CallbackQuery):
     draft = db.get_draft(int(callback.data.replace("draft_regen_", "")))
     if not draft or draft["status"] != "pending":
-        await callback.answer("Этот черновик уже отправлен или отменён.", show_alert=True)
+        await callback.answer(
+            "Этот черновик уже отправлен или отменён.", show_alert=True
+        )
         return
     await callback.answer("✍️ Пишу другой вариант…")
     new_text = await make_draft_reply(
@@ -1548,10 +2027,12 @@ async def cb_draft_regen(callback: types.CallbackQuery):
         history=db.get_chat_history(draft["chat_id"], limit=15),
         style_samples=db.get_owner_style_samples(),
         user_profile=db.get_user_profile(draft["chat_id"]),
-        previous_draft=draft["text"]
+        previous_draft=draft["text"],
     )
     if not new_text:
-        await callback.message.answer("⚠️ ИИ сейчас не ответил — попробуй ещё раз чуть позже.")
+        await callback.message.answer(
+            "⚠️ ИИ сейчас не ответил — попробуй ещё раз чуть позже."
+        )
         return
     db.update_draft(draft["id"], text=new_text)
     # Заменяем только блок черновика, оставляя исходное уведомление над ним
@@ -1559,8 +2040,9 @@ async def cb_draft_regen(callback: types.CallbackQuery):
     await safe_edit(
         callback.message,
         f"{head}\n\n{draft_block(new_text)}" if head else draft_block(new_text),
-        callback.message.reply_markup
+        callback.message.reply_markup,
     )
+
 
 @dp.callback_query(F.data.startswith("draft_drop_"))
 async def cb_draft_drop(callback: types.CallbackQuery):
@@ -1568,10 +2050,22 @@ async def cb_draft_drop(callback: types.CallbackQuery):
     db.update_draft(draft_id, status="dropped")
     await callback.answer("Черновик убран")
     # Кнопки черновика убираем, остальные (игнор, пауза, сводка) оставляем
-    rows = [row for row in (callback.message.reply_markup.inline_keyboard if callback.message.reply_markup else [])
-            if not any((b.callback_data or "").startswith("draft_") for b in row)]
+    rows = [
+        row
+        for row in (
+            callback.message.reply_markup.inline_keyboard
+            if callback.message.reply_markup
+            else []
+        )
+        if not any((b.callback_data or "").startswith("draft_") for b in row)
+    ]
     head = (callback.message.html_text or "").rsplit(DRAFT_MARKER, 1)[0].rstrip()
-    await safe_edit(callback.message, head or "✖️ Черновик убран", InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+    await safe_edit(
+        callback.message,
+        head or "✖️ Черновик убран",
+        InlineKeyboardMarkup(inline_keyboard=rows) if rows else None,
+    )
+
 
 async def try_send_draft_reply(message: types.Message) -> bool:
     """Ответ реплаем на уведомление с черновиком — отправляем собеседнику твой текст"""
@@ -1582,11 +2076,15 @@ async def try_send_draft_reply(message: types.Message) -> bool:
     if not draft:
         return False
     if draft["status"] == "sent":
-        await message.answer("ℹ️ На это сообщение ты уже ответил. Новый текст отправь прямо в чат.")
+        await message.answer(
+            "ℹ️ На это сообщение ты уже ответил. Новый текст отправь прямо в чат."
+        )
         return True
     error = await send_as_owner(draft, message.text)
     if error:
-        await message.answer(f"⚠️ <b>Не отправилось</b>\n<code>{esc(clip(error, 300))}</code>")
+        await message.answer(
+            f"⚠️ <b>Не отправилось</b>\n<code>{esc(clip(error, 300))}</code>"
+        )
     else:
         await message.answer(f"📤 <b>Отправлено</b> → {draft_chat_name(draft)}")
         try:
@@ -1595,7 +2093,9 @@ async def try_send_draft_reply(message: types.Message) -> bool:
             pass
     return True
 
+
 # --- Сводка «Что я пропустил?» ---
+
 
 @dp.callback_query(F.data.startswith("chat_summary_"))
 async def cb_chat_summary(callback: types.CallbackQuery):
@@ -1609,14 +2109,18 @@ async def cb_chat_summary(callback: types.CallbackQuery):
     name = known["name"] if known and known.get("name") else str(chat_id)
     summary_text = await summarize_chat(history, name)
     if not summary_text:
-        await callback.message.answer("⚠️ ИИ сейчас не ответил — попробуй ещё раз чуть позже.")
+        await callback.message.answer(
+            "⚠️ ИИ сейчас не ответил — попробуй ещё раз чуть позже."
+        )
         return
     await callback.message.answer(
         f"🧾 <b>Что ты пропустил</b> · {esc(name)}\n"
         f"<i>по последним {len(history)} сообщениям</i>\n\n{esc(summary_text)}"
     )
 
+
 # --- Инлайн-кнопки Бизнес-Ассистента ---
+
 
 @dp.callback_query(F.data.startswith("ban_"))
 async def callback_ban(callback: types.CallbackQuery):
@@ -1627,46 +2131,67 @@ async def callback_ban(callback: types.CallbackQuery):
         f"🚫 <b>Игнорирую</b> пользователя <code>{user_id}</code>\nВернуть: <code>/unban {user_id}</code>"
     )
 
+
 @dp.callback_query(F.data.startswith("aggr_"))
 async def callback_aggr(callback: types.CallbackQuery):
     user_id = int(callback.data.split("_")[1])
     db.add_to_aggressive(user_id)
     await callback.answer("Агрессивный режим включён", show_alert=True)
-    await callback.message.edit_text(f"🔥 <b>Агрессивный режим включён</b> для <code>{user_id}</code>")
+    await callback.message.edit_text(
+        f"🔥 <b>Агрессивный режим включён</b> для <code>{user_id}</code>"
+    )
+
 
 @dp.callback_query(F.data.startswith("unaggr_"))
 async def callback_unaggr(callback: types.CallbackQuery):
     user_id = int(callback.data.split("_")[1])
     db.remove_from_aggressive(user_id)
     await callback.answer("Агрессивный режим выключен", show_alert=True)
-    await callback.message.edit_text(f"🟢 <b>Агрессивный режим выключен</b> для <code>{user_id}</code>")
+    await callback.message.edit_text(
+        f"🟢 <b>Агрессивный режим выключен</b> для <code>{user_id}</code>"
+    )
+
 
 @dp.callback_query(F.data.startswith("resume_"))
 async def callback_resume(callback: types.CallbackQuery):
     chat_id = int(callback.data.split("_")[1])
     user_last_manual_msg[chat_id] = 0
     await callback.answer("Автоответ снова работает", show_alert=True)
-    await callback.message.edit_text(f"▶️ <b>Автоответ включён</b> в чате <code>{chat_id}</code>")
+    await callback.message.edit_text(
+        f"▶️ <b>Автоответ включён</b> в чате <code>{chat_id}</code>"
+    )
+
 
 @dp.callback_query(F.data.startswith("pause_"))
 async def callback_pause(callback: types.CallbackQuery):
     chat_id = int(callback.data.split("_")[1])
     user_last_manual_msg[chat_id] = time.time()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}")
-    ]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="▶️ Вернуть автоответ", callback_data=f"resume_{chat_id}"
+                )
+            ]
+        ]
+    )
     await callback.answer("Пауза на 10 минут", show_alert=True)
-    await callback.message.edit_text(f"⏸️ <b>Пауза 10 минут</b> в чате <code>{chat_id}</code>", reply_markup=kb)
+    await callback.message.edit_text(
+        f"⏸️ <b>Пауза 10 минут</b> в чате <code>{chat_id}</code>", reply_markup=kb
+    )
+
 
 # ==============================================================================
 # МОДУЛЬ 3: УПРАВЛЕНИЕ НАПОМИНАНИЯМИ И ЗАМЕТКАМИ (ЛС БОТА)
 # ==============================================================================
+
 
 def format_local_dt(dt_local_str: str) -> str:
     try:
         return datetime.fromisoformat(dt_local_str).strftime("%d.%m в %H:%M")
     except Exception:
         return (dt_local_str or "")[:16]
+
 
 def build_reminders_list(user_id: int):
     active = db.get_active_reminders(user_id)
@@ -1683,21 +2208,33 @@ def build_reminders_list(user_id: int):
     keyboard_rows = []
     for idx, rem in enumerate(active, 1):
         rem_id = rem["id"]
-        lines.append(f"<b>{idx}.</b> <code>{format_local_dt(rem['remind_at_local'])}</code> — {esc(rem['text'])}")
-        keyboard_rows.append([
-            InlineKeyboardButton(text=f"✅ {idx}", callback_data=f"done_rem_{rem_id}"),
-            InlineKeyboardButton(text="⏰ +15м", callback_data=f"snooze_{rem_id}_15"),
-            InlineKeyboardButton(text=f"🗑 {idx}", callback_data=f"cancel_rem_{rem_id}")
-        ])
+        lines.append(
+            f"<b>{idx}.</b> <code>{format_local_dt(rem['remind_at_local'])}</code> — {esc(rem['text'])}"
+        )
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"✅ {idx}", callback_data=f"done_rem_{rem_id}"
+                ),
+                InlineKeyboardButton(
+                    text="⏰ +15м", callback_data=f"snooze_{rem_id}_15"
+                ),
+                InlineKeyboardButton(
+                    text=f"🗑 {idx}", callback_data=f"cancel_rem_{rem_id}"
+                ),
+            ]
+        )
     keyboard_rows.append(back_to_menu_row())
 
     text = f"⏰ <b>Напоминания</b> · {len(active)}\n\n" + "\n".join(lines)
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
+
 @dp.message(Command("reminders"))
 async def cmd_reminders(message: types.Message):
     text, kb = build_reminders_list(message.from_user.id)
     await message.answer(text, reply_markup=kb)
+
 
 def build_notes_menu(user_id: int):
     counts = db.get_notes_categories_stats(user_id)
@@ -1709,7 +2246,13 @@ def build_notes_menu(user_id: int):
         c = counts.get(cat, 0)
         icon = db.CATEGORY_EMOJIS[cat]
         lines.append(f"{icon} {cat} — <b>{c}</b>")
-        kb_rows.append([InlineKeyboardButton(text=f"{icon} {cat} ({c})", callback_data=f"view_cat_{cat}")])
+        kb_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{icon} {cat} ({c})", callback_data=f"view_cat_{cat}"
+                )
+            ]
+        )
     kb_rows.append(back_to_menu_row())
 
     text = (
@@ -1719,28 +2262,36 @@ def build_notes_menu(user_id: int):
     )
     return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
+
 @dp.message(Command("notes"))
 async def cmd_notes(message: types.Message):
     text, kb = build_notes_menu(message.from_user.id)
     await message.answer(text, reply_markup=kb)
 
+
 TZ_CHOICES = [
-    (2, "Калининград"), (3, "Москва"),
-    (4, "Самара"), (5, "Екатеринбург"),
-    (6, "Омск"), (7, "Новосибирск"),
+    (2, "Калининград"),
+    (3, "Москва"),
+    (4, "Самара"),
+    (5, "Екатеринбург"),
+    (6, "Омск"),
+    (7, "Новосибирск"),
 ]
+
 
 def build_tz_menu(user_id: int):
     tz = db.get_user_tz_offset(user_id)
     rows = []
     for i in range(0, len(TZ_CHOICES), 2):
-        rows.append([
-            InlineKeyboardButton(
-                text=f"{'● ' if off == tz else ''}{tz_label(off)} {city}",
-                callback_data=f"set_tz_{off}"
-            )
-            for off, city in TZ_CHOICES[i:i + 2]
-        ])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{'● ' if off == tz else ''}{tz_label(off)} {city}",
+                    callback_data=f"set_tz_{off}",
+                )
+                for off, city in TZ_CHOICES[i : i + 2]
+            ]
+        )
     rows.append(back_to_menu_row())
     text = (
         f"🌍 <b>Часовой пояс</b>\n\n"
@@ -1749,6 +2300,7 @@ def build_tz_menu(user_id: int):
     )
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 @dp.message(Command("timezone"))
 async def cmd_timezone(message: types.Message):
     user_id = message.from_user.id
@@ -1756,7 +2308,9 @@ async def cmd_timezone(message: types.Message):
     if len(args) == 2 and args[1].lstrip("+-").isdigit():
         offset = int(args[1])
         if not -12 <= offset <= 14:
-            await message.answer("⚠️ Часовой пояс должен быть от <code>-12</code> до <code>14</code>.")
+            await message.answer(
+                "⚠️ Часовой пояс должен быть от <code>-12</code> до <code>14</code>."
+            )
             return
         db.set_user_tz_offset(user_id, offset)
         await message.answer(f"✅ <b>Часовой пояс: {tz_label(offset)}</b>")
@@ -1764,6 +2318,7 @@ async def cmd_timezone(message: types.Message):
 
     text, kb = build_tz_menu(user_id)
     await message.answer(text, reply_markup=kb)
+
 
 @dp.message(Command("remind"))
 async def cmd_remind_manual(message: types.Message):
@@ -1777,6 +2332,7 @@ async def cmd_remind_manual(message: types.Message):
         return
     await process_incoming_text(message, args[1])
 
+
 @dp.message(Command("note"))
 async def cmd_note_manual(message: types.Message):
     args = message.text.split(maxsplit=2)
@@ -1789,17 +2345,30 @@ async def cmd_note_manual(message: types.Message):
         )
         return
 
-    if len(args) == 3 and args[1].lower() in ["учеба", "учёба", "покупки", "софт/vpn", "софт", "vpn", "идеи", "другое"]:
+    if len(args) == 3 and args[1].lower() in [
+        "учеба",
+        "учёба",
+        "покупки",
+        "софт/vpn",
+        "софт",
+        "vpn",
+        "идеи",
+        "другое",
+    ]:
         cat = db.normalize_category(args[1])
         note_id = db.add_note(message.from_user.id, cat, args[2])
-        await message.answer(note_saved_text(cat, args[2]), reply_markup=note_saved_kb(cat, note_id))
+        await message.answer(
+            note_saved_text(cat, args[2]), reply_markup=note_saved_kb(cat, note_id)
+        )
     else:
         full_text = message.text.split(maxsplit=1)[1]
         await process_incoming_text(message, full_text)
 
+
 # ==============================================================================
 # ОБРАБОТКА ВХОДЯЩИХ СООБЩЕНИЙ В ЛС БОТА (ИИ-ПАРСИНГ НАПОМИНАНИЙ И ЗАМЕТОК)
 # ==============================================================================
+
 
 def note_saved_text(cat: str, content: str, source_info: str = "") -> str:
     source_block = f"\n<i>📎 {esc(source_info)}</i>" if source_info else ""
@@ -1809,14 +2378,23 @@ def note_saved_text(cat: str, content: str, source_info: str = "") -> str:
         f"{source_block}"
     )
 
+
 def note_saved_kb(cat: str, note_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"📂 {get_cat_icon(cat)} {cat}", callback_data=f"view_cat_{cat}"),
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_note_{note_id}")
-        ],
-        [InlineKeyboardButton(text="📚 Все заметки", callback_data="notes_menu")]
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"📂 {get_cat_icon(cat)} {cat}",
+                    callback_data=f"view_cat_{cat}",
+                ),
+                InlineKeyboardButton(
+                    text="🗑 Удалить", callback_data=f"del_note_{note_id}"
+                ),
+            ],
+            [InlineKeyboardButton(text="📚 Все заметки", callback_data="notes_menu")],
+        ]
+    )
+
 
 async def process_incoming_text(message: types.Message, raw_text: str):
     user_id = message.from_user.id
@@ -1844,7 +2422,7 @@ async def process_incoming_text(message: types.Message, raw_text: str):
         user_id=user_id,
         is_forwarded=bool(message.forward_origin),
         source_info=source_info,
-        tz_offset=tz_offset
+        tz_offset=tz_offset,
     )
     if hasattr(res, "model_dump"):
         res_data = res.model_dump()
@@ -1882,7 +2460,7 @@ async def process_incoming_text(message: types.Message, raw_text: str):
             text=title,
             remind_at_utc=dt_utc.strftime("%Y-%m-%d %H:%M:%S"),
             remind_at_local=dt_local.strftime("%Y-%m-%d %H:%M:%S"),
-            source_info=source_info
+            source_info=source_info,
         )
 
         source_block = f"\n<i>📎 {esc(source_info)}</i>" if source_info else ""
@@ -1892,13 +2470,23 @@ async def process_incoming_text(message: types.Message, raw_text: str):
             f"{source_block}"
         )
 
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_rem_{rem_id}"),
-                InlineKeyboardButton(text="⏰ +15 мин", callback_data=f"snooze_{rem_id}_15")
-            ],
-            [InlineKeyboardButton(text="📋 Все напоминания", callback_data="show_reminders_list")]
-        ])
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отменить", callback_data=f"cancel_rem_{rem_id}"
+                    ),
+                    InlineKeyboardButton(
+                        text="⏰ +15 мин", callback_data=f"snooze_{rem_id}_15"
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📋 Все напоминания", callback_data="show_reminders_list"
+                    )
+                ],
+            ]
+        )
         await message.answer(text_out, reply_markup=kb)
 
     # 2. ЗАМЕТКА (нет времени)
@@ -1906,7 +2494,10 @@ async def process_incoming_text(message: types.Message, raw_text: str):
         cat = db.normalize_category(res_data.get("category") or "Другое")
         content = res_data.get("title") or raw_text
         note_id = db.add_note(user_id=user_id, category=cat, content=content)
-        await message.answer(note_saved_text(cat, content, source_info), reply_markup=note_saved_kb(cat, note_id))
+        await message.answer(
+            note_saved_text(cat, content, source_info),
+            reply_markup=note_saved_kb(cat, note_id),
+        )
 
     # 3. ОБЫЧНЫЙ ЧАТ / ВОПРОС К ИИ
     else:
@@ -1916,34 +2507,50 @@ async def process_incoming_text(message: types.Message, raw_text: str):
         # Ответы ИИ (код, длинные объяснения) легко превышают лимит Telegram в 4096 символов
         full = f"🤖 {reply}"
         for start in range(0, len(full), 4000):
-            await message.answer(full[start:start + 4000], parse_mode=None)
+            await message.answer(full[start : start + 4000], parse_mode=None)
+
 
 # --- Бэкап вручную и восстановление из файла ---
+
 
 @dp.message(Command("backup"))
 async def cmd_backup(message: types.Message):
     if not backup_state["allowed"]:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="💾 Всё равно сохранить", callback_data="backup_force")
-        ]])
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="💾 Всё равно сохранить", callback_data="backup_force"
+                    )
+                ]
+            ]
+        )
         await message.answer(
             "⚠️ <b>Автобэкап на паузе</b>: при запуске не удалось восстановить данные из прошлого бэкапа.\n"
             "Если сохранить сейчас, закреплённой станет текущая (возможно, пустая) база. "
             "Предыдущий файл останется в чате.",
-            reply_markup=kb
+            reply_markup=kb,
         )
         return
     sent = await make_backup("Бэкап по команде /backup", force=True)
     if not sent:
-        await message.answer("⚠️ Не удалось сделать бэкап — проверь, что задан MY_TELEGRAM_ID.")
+        await message.answer(
+            "⚠️ Не удалось сделать бэкап — проверь, что задан MY_TELEGRAM_ID."
+        )
+
 
 @dp.callback_query(F.data == "backup_force")
 async def cb_backup_force(callback: types.CallbackQuery):
     backup_state["allowed"] = True
-    backup_state["restore_attempts"] = RESTORE_RETRIES  # больше не пытаемся восстановиться автоматически
+    backup_state["restore_attempts"] = (
+        RESTORE_RETRIES  # больше не пытаемся восстановиться автоматически
+    )
     await callback.answer("Сохраняю текущую базу")
     await make_backup("Бэкап по команде /backup", force=True)
-    await safe_edit(callback.message, "💾 <b>Автобэкап снова работает</b>, текущая база сохранена.")
+    await safe_edit(
+        callback.message, "💾 <b>Автобэкап снова работает</b>, текущая база сохранена."
+    )
+
 
 @dp.message(F.chat.type == "private", F.document)
 async def handle_backup_file(message: types.Message):
@@ -1954,26 +2561,38 @@ async def handle_backup_file(message: types.Message):
         if message.caption:
             await process_incoming_text(message, message.caption)
         else:
-            await message.answer("💡 Пришли текстом или перешли сообщение с описанием задачи / заметки.")
+            await message.answer(
+                "💡 Пришли текстом или перешли сообщение с описанием задачи / заметки."
+            )
         return
     key = secrets.token_hex(6)
     pending_restores[key] = message.document.file_id
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="♻️ Восстановить", callback_data=f"restore_db_{key}"),
-        InlineKeyboardButton(text="✖️ Отмена", callback_data=f"restore_cancel_{key}")
-    ]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="♻️ Восстановить", callback_data=f"restore_db_{key}"
+                ),
+                InlineKeyboardButton(
+                    text="✖️ Отмена", callback_data=f"restore_cancel_{key}"
+                ),
+            ]
+        ]
+    )
     await message.answer(
         f"♻️ <b>Восстановить базу из «{esc(message.document.file_name)}»?</b>\n"
         "Текущие заметки, напоминания и настройки заменятся содержимым файла. "
         "Перед этим я сохраню текущую базу отдельным бэкапом.",
-        reply_markup=kb
+        reply_markup=kb,
     )
+
 
 @dp.callback_query(F.data.startswith("restore_cancel_"))
 async def cb_restore_cancel(callback: types.CallbackQuery):
     pending_restores.pop(callback.data.replace("restore_cancel_", ""), None)
     await callback.answer("Отменено")
     await safe_edit(callback.message, "✖️ Восстановление отменено.")
+
 
 @dp.callback_query(F.data.startswith("restore_db_"))
 async def cb_restore_db(callback: types.CallbackQuery):
@@ -1989,12 +2608,19 @@ async def cb_restore_db(callback: types.CallbackQuery):
     try:
         await restore_from_file_id(file_id)
     except Exception as e:
-        await safe_edit(callback.message, f"⚠️ <b>Не получилось восстановить</b>\n<code>{esc(clip(str(e), 300))}</code>")
+        await safe_edit(
+            callback.message,
+            f"⚠️ <b>Не получилось восстановить</b>\n<code>{esc(clip(str(e), 300))}</code>",
+        )
         return
     backup_state["allowed"] = True
     backup_state["restore_attempts"] = RESTORE_RETRIES
-    await safe_edit(callback.message, "♻️ <b>База восстановлена из файла.</b> Закрепляю её как актуальный бэкап.")
+    await safe_edit(
+        callback.message,
+        "♻️ <b>База восстановлена из файла.</b> Закрепляю её как актуальный бэкап.",
+    )
     await make_backup("Восстановлено из присланного файла", force=True)
+
 
 @dp.message(F.chat.type == "private")
 async def handle_private_message(message: types.Message):
@@ -2010,14 +2636,18 @@ async def handle_private_message(message: types.Message):
     text = message.text or message.caption or ""
     if not text:
         if message.voice or message.photo:
-            await message.answer("💡 Пришли текстом или перешли сообщение с описанием задачи / заметки.")
+            await message.answer(
+                "💡 Пришли текстом или перешли сообщение с описанием задачи / заметки."
+            )
         return
 
     await process_incoming_text(message, text)
 
+
 # ==============================================================================
 # ИНЛАЙН-ОБРАБОТЧИКИ МОДУЛЯ 3 (КНОПКИ НАПОМИНАНИЙ И ЗАМЕТОК)
 # ==============================================================================
+
 
 @dp.callback_query(F.data.startswith("cancel_rem_"))
 async def cb_cancel_rem(callback: types.CallbackQuery):
@@ -2026,10 +2656,17 @@ async def cb_cancel_rem(callback: types.CallbackQuery):
     await callback.answer("Напоминание удалено")
     await callback.message.edit_text(
         "❌ <b>Напоминание удалено</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Все напоминания", callback_data="show_reminders_list")]
-        ])
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="📋 Все напоминания", callback_data="show_reminders_list"
+                    )
+                ]
+            ]
+        ),
     )
+
 
 @dp.callback_query(F.data.startswith("done_rem_"))
 async def cb_done_rem(callback: types.CallbackQuery):
@@ -2037,6 +2674,7 @@ async def cb_done_rem(callback: types.CallbackQuery):
     db.mark_reminder_completed(rem_id, callback.from_user.id)
     await callback.answer("Отлично! 🎉")
     await callback.message.edit_text("✅ <b>Готово!</b> Напоминание выполнено.")
+
 
 @dp.callback_query(F.data.startswith("snooze_"))
 async def cb_snooze_rem(callback: types.CallbackQuery):
@@ -2046,20 +2684,31 @@ async def cb_snooze_rem(callback: types.CallbackQuery):
 
     new_dt_local = db.snooze_reminder(rem_id, callback.from_user.id, minutes)
     if not new_dt_local:
-        await callback.answer("Это напоминание уже закрыто или удалено.", show_alert=True)
+        await callback.answer(
+            "Это напоминание уже закрыто или удалено.", show_alert=True
+        )
         return
 
     await callback.answer(f"Отложено на {minutes} мин")
     rem = db.get_reminder_by_id(rem_id)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Готово", callback_data=f"done_rem_{rem_id}"),
-        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"cancel_rem_{rem_id}")
-    ]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Готово", callback_data=f"done_rem_{rem_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🗑 Удалить", callback_data=f"cancel_rem_{rem_id}"
+                ),
+            ]
+        ]
+    )
     await callback.message.edit_text(
         f"⏰ <b>Перенёс на {new_dt_local.strftime('%d.%m в %H:%M')}</b> (+{minutes} мин)\n"
         f"<blockquote>{esc(rem['text']) if rem else ''}</blockquote>",
-        reply_markup=kb
+        reply_markup=kb,
     )
+
 
 @dp.callback_query(F.data == "show_reminders_list")
 async def cb_show_reminders_list(callback: types.CallbackQuery):
@@ -2067,11 +2716,13 @@ async def cb_show_reminders_list(callback: types.CallbackQuery):
     await safe_edit(callback.message, text, kb)
     await callback.answer()
 
+
 @dp.callback_query(F.data == "notes_menu")
 async def cb_notes_menu(callback: types.CallbackQuery):
     text, kb = build_notes_menu(callback.from_user.id)
     await safe_edit(callback.message, text, kb)
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("view_cat_"))
 async def cb_view_cat(callback: types.CallbackQuery):
@@ -2080,27 +2731,50 @@ async def cb_view_cat(callback: types.CallbackQuery):
     icon = get_cat_icon(cat)
 
     if not notes:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="⬅️ К категориям", callback_data="notes_menu")
-        ]])
-        await safe_edit(callback.message, f"{icon} <b>{cat}</b>\n\nЗдесь пока пусто.", kb)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ К категориям", callback_data="notes_menu"
+                    )
+                ]
+            ]
+        )
+        await safe_edit(
+            callback.message, f"{icon} <b>{cat}</b>\n\nЗдесь пока пусто.", kb
+        )
         await callback.answer()
         return
 
     lines = []
     kb_rows = []
     for idx, n in enumerate(notes, 1):
-        lines.append(f"<b>{idx}.</b> {esc(n['content'])} <i>· {n['created_at'][:10]}</i>")
-        kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить {idx}", callback_data=f"del_note_{n['id']}")])
+        lines.append(
+            f"<b>{idx}.</b> {esc(n['content'])} <i>· {n['created_at'][:10]}</i>"
+        )
+        kb_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🗑 Удалить {idx}", callback_data=f"del_note_{n['id']}"
+                )
+            ]
+        )
 
-    kb_rows.append([
-        InlineKeyboardButton(text="🧹 Очистить всё", callback_data=f"clear_cat_{cat}"),
-        InlineKeyboardButton(text="⬅️ К категориям", callback_data="notes_menu")
-    ])
+    kb_rows.append(
+        [
+            InlineKeyboardButton(
+                text="🧹 Очистить всё", callback_data=f"clear_cat_{cat}"
+            ),
+            InlineKeyboardButton(text="⬅️ К категориям", callback_data="notes_menu"),
+        ]
+    )
 
     text = f"{icon} <b>{cat}</b> · {len(notes)}\n\n" + "\n".join(lines)
-    await safe_edit(callback.message, text, InlineKeyboardMarkup(inline_keyboard=kb_rows))
+    await safe_edit(
+        callback.message, text, InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    )
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("del_note_"))
 async def cb_del_note(callback: types.CallbackQuery):
@@ -2109,27 +2783,45 @@ async def cb_del_note(callback: types.CallbackQuery):
     db.delete_note_by_id(note_id, callback.from_user.id)
     await callback.answer("Заметка удалена")
     back_cat = note["category"] if note else None
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"📂 {back_cat}", callback_data=f"view_cat_{back_cat}") if back_cat
-        else InlineKeyboardButton(text="📚 Все заметки", callback_data="notes_menu")
-    ]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                (
+                    InlineKeyboardButton(
+                        text=f"📂 {back_cat}", callback_data=f"view_cat_{back_cat}"
+                    )
+                    if back_cat
+                    else InlineKeyboardButton(
+                        text="📚 Все заметки", callback_data="notes_menu"
+                    )
+                )
+            ]
+        ]
+    )
     await callback.message.edit_text("🗑 <b>Заметка удалена</b>", reply_markup=kb)
+
 
 @dp.callback_query(F.data.startswith("clear_cat_"))
 async def cb_clear_cat(callback: types.CallbackQuery):
     cat = db.normalize_category(callback.data.replace("clear_cat_", ""))
     db.clear_notes_by_cat(callback.from_user.id, cat)
     await callback.answer("Категория очищена", show_alert=True)
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⬅️ К категориям", callback_data="notes_menu")
-    ]])
-    await callback.message.edit_text(f"🧹 <b>{get_cat_icon(cat)} {cat}</b> — все заметки удалены", reply_markup=kb)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ К категориям", callback_data="notes_menu")]
+        ]
+    )
+    await callback.message.edit_text(
+        f"🧹 <b>{get_cat_icon(cat)} {cat}</b> — все заметки удалены", reply_markup=kb
+    )
+
 
 @dp.callback_query(F.data == "open_tz_menu")
 async def cb_open_tz_menu(callback: types.CallbackQuery):
     text, kb = build_tz_menu(callback.from_user.id)
     await safe_edit(callback.message, text, kb)
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("set_tz_"))
 async def cb_set_tz(callback: types.CallbackQuery):
@@ -2139,10 +2831,13 @@ async def cb_set_tz(callback: types.CallbackQuery):
     text, kb = build_tz_menu(callback.from_user.id)
     await safe_edit(callback.message, text, kb)
 
+
 @dp.error()
 async def on_error(event: types.ErrorEvent):
     # Повторное нажатие той же кнопки даёт «message is not modified» — это не ошибка
-    if isinstance(event.exception, TelegramBadRequest) and "not modified" in str(event.exception):
+    if isinstance(event.exception, TelegramBadRequest) and "not modified" in str(
+        event.exception
+    ):
         if event.update.callback_query:
             try:
                 await event.update.callback_query.answer()
@@ -2152,9 +2847,11 @@ async def on_error(event: types.ErrorEvent):
     logging.error(f"Необработанная ошибка: {event.exception}", exc_info=event.exception)
     return True
 
+
 # ==============================================================================
 # ТОЧКА ВХОДА (MAIN)
 # ==============================================================================
+
 
 async def main():
     # Инициализация всех таблиц базы данных (Бизнес-бот + Модуль 3)
@@ -2169,9 +2866,10 @@ async def main():
     await start_web_server()
 
     # Запуск фонового воркера отправки напоминаний
-    asyncio.create_task(reminder_worker(bot))
-    asyncio.create_task(backup_worker())
-    asyncio.create_task(schedule_worker())
+    for worker in (reminder_worker(bot), backup_worker(), schedule_worker()):
+        task = asyncio.create_task(worker)
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
 
     # Регистрация меню команд бота в Telegram
     commands = [
@@ -2214,6 +2912,7 @@ async def main():
         except Exception as e:
             logging.error(f"Не удалось сделать бэкап при выключении: {e}")
         await bot.session.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
