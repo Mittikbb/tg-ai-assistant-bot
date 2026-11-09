@@ -55,6 +55,8 @@ PAUSE_TIMEOUT = 600  # 10 минут (в секундах)
 status_reply_sent = {}
 STATUS_REPLY_COOLDOWN = 1800  # 30 минут
 
+background_tasks = set()
+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -1223,27 +1225,32 @@ async def handle_business_message(message: types.Message):
             clean_text = text[1:].strip()
             final_text = ""  # кавайный текст — не образец твоего стиля
             if clean_text:
-                try:
-                    cute_text = await make_cute_text(clean_text)
-                    if cute_text and cute_text != clean_text:
-                        if message.caption is not None:
-                            await bot.edit_message_caption(
-                                caption=cute_text[:1024],
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                        else:
-                            await bot.edit_message_text(
-                                text=cute_text,
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                except Exception as e:
-                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+                async def _edit_cute_text(msg: types.Message, txt: str, c_id: int):
+                    try:
+                        cute_txt = await make_cute_text(txt)
+                        if cute_txt and cute_txt != txt:
+                            if msg.caption is not None:
+                                await bot.edit_message_caption(
+                                    caption=cute_txt[:1024],
+                                    chat_id=c_id,
+                                    message_id=msg.message_id,
+                                    business_connection_id=msg.business_connection_id,
+                                    parse_mode=None
+                                )
+                            else:
+                                await bot.edit_message_text(
+                                    text=cute_txt,
+                                    chat_id=c_id,
+                                    message_id=msg.message_id,
+                                    business_connection_id=msg.business_connection_id,
+                                    parse_mode=None
+                                )
+                    except Exception as e:
+                        logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+
+                task = asyncio.create_task(_edit_cute_text(message, clean_text, chat_id))
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
         db.add_chat_message(chat_id, "me", final_text)
 
