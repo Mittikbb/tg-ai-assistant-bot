@@ -45,6 +45,7 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MY_ID = int(os.getenv("MY_TELEGRAM_ID", 0))
 PORT = int(os.environ.get("PORT", 8080))
+background_tasks = set()
 # Render сам выставляет RENDER_EXTERNAL_URL; локально можно задать PUBLIC_URL
 PUBLIC_URL = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or f"http://localhost:{PORT}").rstrip("/")
 
@@ -1223,27 +1224,31 @@ async def handle_business_message(message: types.Message):
             clean_text = text[1:].strip()
             final_text = ""  # кавайный текст — не образец твоего стиля
             if clean_text:
-                try:
-                    cute_text = await make_cute_text(clean_text)
-                    if cute_text and cute_text != clean_text:
-                        if message.caption is not None:
-                            await bot.edit_message_caption(
-                                caption=cute_text[:1024],
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                        else:
-                            await bot.edit_message_text(
-                                text=cute_text,
-                                chat_id=chat_id,
-                                message_id=message.message_id,
-                                business_connection_id=message.business_connection_id,
-                                parse_mode=None
-                            )
-                except Exception as e:
-                    logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+                async def _background_cute_text():
+                    try:
+                        cute_text = await make_cute_text(clean_text)
+                        if cute_text and cute_text != clean_text:
+                            if message.caption is not None:
+                                await bot.edit_message_caption(
+                                    caption=cute_text[:1024],
+                                    chat_id=chat_id,
+                                    message_id=message.message_id,
+                                    business_connection_id=message.business_connection_id,
+                                    parse_mode=None
+                                )
+                            else:
+                                await bot.edit_message_text(
+                                    text=cute_text,
+                                    chat_id=chat_id,
+                                    message_id=message.message_id,
+                                    business_connection_id=message.business_connection_id,
+                                    parse_mode=None
+                                )
+                    except Exception as e:
+                        logging.error(f"Ошибка при редактировании няшного сообщения: {e}")
+                task = asyncio.create_task(_background_cute_text())
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
 
         db.add_chat_message(chat_id, "me", final_text)
 
