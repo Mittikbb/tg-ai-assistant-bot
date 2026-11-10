@@ -1,0 +1,48 @@
+2026-11-10 05:02:08,767 [WARNING] root: Не удалось прочитать закреплённый бэкап: Telegram server says - Unauthorized
+2026-11-10 05:02:08,768 [INFO] root: 🌐 Веб-панель запущена на порту 8080 (ссылка с ключом — команда /panel в боте)
+2026-11-10 05:02:08,770 [INFO] root: ⏰ Фоновый воркер напоминаний запущен.
+2026-11-10 05:02:08,770 [INFO] root: 💾 Воркер автобэкапа запущен.
+2026-11-10 05:02:08,770 [INFO] root: 🌙 Воркер расписания сна запущен.
+2026-11-10 05:02:08,879 [WARNING] root: Не удалось обновить список команд: Telegram server says - Unauthorized
+2026-11-10 05:02:08,984 [WARNING] root: Не удалось удалить webhook: Telegram server says - Unauthorized
+2026-11-10 05:02:08,984 [INFO] root: 🚀 Бизнес-Ассистент с Модулем 3 успешно запущен!
+2026-11-10 05:02:08,985 [INFO] aiogram.dispatcher: Start polling
+2026-11-10 05:02:09,092 [INFO] aiogram.dispatcher: Polling stopped
+2026-11-10 05:02:09,523 [ERROR] root: Не удалось сделать бэкап при выключении: Telegram server says - Unauthorized
+Traceback (most recent call last):
+  File "/app/main.py", line 2219, in <module>
+    asyncio.run(main())
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/app/main.py", line 2209, in main
+    await dp.start_polling(bot, close_bot_session=False)
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/dispatcher/dispatcher.py", line 622, in start_polling
+    await asyncio.gather(*done)
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/dispatcher/dispatcher.py", line 378, in _polling
+    user: User = await bot.me()
+                 ^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/client/bot.py", line 389, in me
+    self._me = await self.get_me()
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/client/bot.py", line 1831, in get_me
+    return await self(call, request_timeout=request_timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/client/bot.py", line 515, in __call__
+    return await self.session(self, method, timeout=request_timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/client/session/base.py", line 259, in __call__
+    return cast(TelegramType, await middleware(bot, method))
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/client/session/aiohttp.py", line 177, in make_request
+    response = self.check_response(
+               ^^^^^^^^^^^^^^^^^^^^
+  File "/home/jules/.pyenv/versions/3.12.13/lib/python3.12/site-packages/aiogram/client/session/base.py", line 127, in check_response
+    raise TelegramUnauthorizedError(method=method, message=description)
+aiogram.exceptions.TelegramUnauthorizedError: Telegram server says - Unauthorized
